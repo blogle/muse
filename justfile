@@ -4,6 +4,9 @@ default:
 nextest:
     cargo nextest run --workspace
 
+check:
+    ./scripts/check.sh
+
 fmt:
     cargo fmt --all -- --check
 
@@ -17,11 +20,10 @@ build-release:
     cargo build --workspace --release
 
 bench:
-    cargo bench --workspace
+    ./scripts/bench.sh
 
 flake-check:
     nix flake check
 
-profile-coz:
-    @printf '%s\n' 'profile-coz is unavailable: MUSE has no canonical simulation workload yet.' >&2
-    @false
+profile-coz *args:
+    ./scripts/profile-coz.sh {{args}}
