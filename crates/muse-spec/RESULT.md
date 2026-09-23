@@ -10,6 +10,7 @@
 - Recipe `use:` expansion binds declared inputs and parameters, detects recursion, namespaces node IDs, checks declared binding types, and resolves recipe outputs as compile-time aliases.
 - Expression bindings enforce scalar-field inputs for `pointwise`, vector-field inputs for `vector_expr`, scalar-only parameters, and reject colliding input/parameter names.
 - Static scalar configuration schemas enforce accepted keys, scalar types, and required values without altering `PortSpec`.
+- All top-level and recipe input/parameter type declarations are validated eagerly against the frozen `ValueType` vocabulary, including unused declarations; unsupported types report `TypeMismatch` at their YAML declaration path.
 - References validate operator output names; `petgraph` provides cycle detection/topological sorting; CEL source is validated and retained in the frozen IR handle.
 - Required invalid-category fixtures and snapshots plus valid minimal, pointwise, and multiple-use recipe fixtures are included. Repeated recipe compilation asserts identical debug output and verifies alias-expanded dependency order.
 
