@@ -1,0 +1,10 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+ERROR
+MalformedYaml: error: line 1 column 11: expected mapping start
+ --> <input>:1:11
+  |
+1 | programs: [
+  |           ^ expected mapping start

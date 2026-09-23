@@ -1,0 +1,8 @@
+recipes:
+  loop:
+    nodes:
+      again: {use: loop}
+programs:
+  generate:
+    nodes:
+      entry: {use: loop}

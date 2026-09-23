@@ -1,0 +1,7 @@
+programs:
+  generate:
+    nodes:
+      first:
+        op: laplacian
+        args:
+          field: $node.missing.value
