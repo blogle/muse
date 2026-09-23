@@ -17,6 +17,15 @@ pub enum OperatorError {
     Cel(String),
     #[error("unsupported operator configuration: {0}")]
     UnsupportedConfiguration(String),
+    #[error("missing external input `{0}`")]
+    MissingInput(String),
+    #[error("external input `{0}` is not referenced by the program")]
+    UnknownInput(String),
+    #[error("external input `{name}` has the wrong runtime type; expected {expected}")]
+    InputType {
+        name: String,
+        expected: &'static str,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, OperatorError>;
@@ -24,6 +33,14 @@ type CelBindings = (BTreeMap<String, Vec<f64>>, BTreeMap<String, f64>);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
+    Scalar(f64),
+    Field(Field),
+    Network(Network),
+}
+
+/// Runtime values supplied for `ValueRef::Input` at execution time.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RuntimeValue {
     Scalar(f64),
     Field(Field),
     Network(Network),
@@ -390,6 +407,30 @@ pub fn vector_expression(
 /// Run the IR in its supplied topological order; expression argument conventions are
 /// deliberately read from the node's named bindings and the frozen `args` contract.
 pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
+    execute_with_inputs(program, state, &BTreeMap::new())
+}
+
+/// Execute a topologically ordered program with executor-local external inputs.
+pub fn execute_with_inputs(
+    program: &Program,
+    state: &WorldState,
+    inputs: &BTreeMap<String, RuntimeValue>,
+) -> Result<FieldStore> {
+    let referenced_inputs: std::collections::BTreeSet<_> = program
+        .nodes
+        .iter()
+        .flat_map(|node| node.args.values())
+        .filter_map(|value| match value {
+            ValueRef::Input(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    if let Some(unused) = inputs
+        .keys()
+        .find(|name| !referenced_inputs.contains(name.as_str()))
+    {
+        return Err(OperatorError::UnknownInput(unused.clone()));
+    }
     let mut store = FieldStore::default();
     for node in &program.nodes {
         let scalar = |name: &str| -> Result<f64> {
@@ -400,6 +441,14 @@ pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
                     .get(p)
                     .copied()
                     .ok_or_else(|| OperatorError::Invalid(format!("missing parameter {p}"))),
+                Some(ValueRef::Input(input)) => match inputs.get(input) {
+                    Some(RuntimeValue::Scalar(value)) => Ok(*value),
+                    Some(_) => Err(OperatorError::InputType {
+                        name: input.clone(),
+                        expected: "Scalar",
+                    }),
+                    None => Err(OperatorError::MissingInput(input.clone())),
+                },
                 _ => Err(OperatorError::Invalid(format!(
                     "missing scalar argument {name}"
                 ))),
@@ -420,6 +469,14 @@ pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
                         ))),
                     }
                 }
+                Some(ValueRef::Input(input)) => match inputs.get(input) {
+                    Some(RuntimeValue::Field(field)) => Ok(field.clone()),
+                    Some(_) => Err(OperatorError::InputType {
+                        name: input.clone(),
+                        expected: "Field",
+                    }),
+                    None => Err(OperatorError::MissingInput(input.clone())),
+                },
                 _ => Err(OperatorError::Invalid(format!(
                     "missing field argument {name}"
                 ))),
@@ -439,6 +496,21 @@ pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
                         })?;
                         scalars.insert(name.clone(), value);
                     }
+                    ValueRef::Input(input) => match inputs.get(input) {
+                        Some(RuntimeValue::Scalar(value)) => {
+                            scalars.insert(name.clone(), *value);
+                        }
+                        Some(RuntimeValue::Field(Field::Scalar(values))) => {
+                            fields.insert(name.clone(), values.clone());
+                        }
+                        Some(_) => {
+                            return Err(OperatorError::InputType {
+                                name: input.clone(),
+                                expected: "Scalar or ScalarField",
+                            });
+                        }
+                        None => return Err(OperatorError::MissingInput(input.clone())),
+                    },
                     ValueRef::State(field_name) => match state.fields.get(field_name) {
                         Some(Field::Scalar(values)) => {
                             fields.insert(name.clone(), values.clone());
@@ -472,11 +544,6 @@ pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
                             )));
                         }
                     },
-                    ValueRef::Input(input) => {
-                        return Err(OperatorError::UnsupportedConfiguration(format!(
-                            "CEL input binding {name} refers to external input {input}, but Program execution receives only WorldState"
-                        )));
-                    }
                 }
             }
             Ok((fields, scalars))
@@ -739,6 +806,97 @@ mod tests {
         for (p, v) in mesh.positions.iter().zip(vectors) {
             assert!(p.dot(*v).abs() < 1e-10);
         }
+    }
+
+    #[test]
+    fn external_scalar_field_and_scalar_inputs_resolve_in_cel_and_fixed_ports() {
+        let mesh = line_mesh(4);
+        let state = WorldState {
+            mesh,
+            fields: BTreeMap::new(),
+            networks: BTreeMap::new(),
+            parameters: BTreeMap::new(),
+            step: 0,
+            seed: 0,
+        };
+        let program = Program {
+            nodes: vec![
+                CompiledNode {
+                    id: "p".into(),
+                    op: "pointwise".into(),
+                    args: BTreeMap::from([
+                        ("x".into(), ValueRef::Input("x".into())),
+                        ("bias".into(), ValueRef::Input("bias".into())),
+                    ]),
+                    cel: vec![CompiledExpressionHandle::from_source("x + bias")],
+                },
+                CompiledNode {
+                    id: "n".into(),
+                    op: "neighbor_sample".into(),
+                    args: BTreeMap::from([("field".into(), ValueRef::Input("x".into()))]),
+                    cel: vec![],
+                },
+            ],
+            updates: vec![],
+        };
+        let inputs = BTreeMap::from([
+            (
+                "x".into(),
+                RuntimeValue::Field(Field::Scalar(vec![1.0, 2.0, 3.0, 4.0])),
+            ),
+            ("bias".into(), RuntimeValue::Scalar(10.0)),
+        ]);
+        let output = execute_with_inputs(&program, &state, &inputs).unwrap();
+        assert_eq!(
+            output.scalar_field("p.value").unwrap(),
+            &[11.0, 12.0, 13.0, 14.0]
+        );
+        assert_eq!(
+            output.scalar_field("n.value").unwrap(),
+            &[2.0, 2.0, 3.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn external_input_errors_distinguish_missing_unknown_and_type() {
+        let state = WorldState {
+            mesh: line_mesh(2),
+            fields: BTreeMap::new(),
+            networks: BTreeMap::new(),
+            parameters: BTreeMap::new(),
+            step: 0,
+            seed: 0,
+        };
+        let program = Program {
+            nodes: vec![CompiledNode {
+                id: "p".into(),
+                op: "pointwise".into(),
+                args: BTreeMap::from([("x".into(), ValueRef::Input("x".into()))]),
+                cel: vec![CompiledExpressionHandle::from_source("x * 2.0")],
+            }],
+            updates: vec![],
+        };
+        assert!(
+            matches!(execute(&program, &state), Err(OperatorError::MissingInput(name)) if name == "x")
+        );
+        assert!(matches!(
+            execute_with_inputs(&program, &state, &BTreeMap::from([("unused".into(), RuntimeValue::Scalar(1.0))])),
+            Err(OperatorError::UnknownInput(name)) if name == "unused"
+        ));
+
+        let fixed_port_program = Program {
+            nodes: vec![CompiledNode {
+                id: "n".into(),
+                op: "neighbor_sample".into(),
+                args: BTreeMap::from([("field".into(), ValueRef::Input("field".into()))]),
+                cel: vec![],
+            }],
+            updates: vec![],
+        };
+        assert!(matches!(
+            execute_with_inputs(&fixed_port_program, &state, &BTreeMap::from([("field".into(), RuntimeValue::Scalar(2.0))])),
+            Err(OperatorError::InputType { name, expected: "Field" }) if name == "field"
+        ));
     }
 
     #[test]

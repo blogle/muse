@@ -3,7 +3,7 @@
 ## Files changed
 
 - `crates/muse-ops/Cargo.toml`: enabled approved CEL, FastNoise Lite, BLAKE3, Glam, error, and Divan dependencies.
-- `crates/muse-ops/src/lib.rs`: added dense field store, direct kernels, keyed noise, CEL pointwise/vector evaluation, topological program execution, and acceptance tests.
+- `crates/muse-ops/src/lib.rs`: added dense field store, direct kernels, keyed noise, CEL pointwise/vector evaluation, topological program execution, executor-local external input values, and acceptance tests.
 - `crates/muse-ops/benches/operators.rs`: Divan workloads for CEL pointwise, noise, gradient, diffusion, and accumulation.
 
 ## Validation
@@ -11,7 +11,7 @@
 Commands run in `nix develop`:
 
 - `cargo check -p muse-ops` — passed.
-- `cargo nextest run -p muse-ops` — passed (9 tests).
+- `cargo nextest run -p muse-ops` — passed (11 tests).
 - `cargo bench -p muse-ops` — passed.
 - `cargo fmt --all -- --check` — passed.
 - `cargo clippy -p muse-ops --all-targets -- -D warnings` — passed.
@@ -23,15 +23,15 @@ Measurements from the optimized bench run (100 samples; machine-local, not thres
 
 | Workload | Median |
 | --- | ---:|
-| CEL pointwise, 10k cells, `x * 2.0 + 1.0` (program compiled once) | 23.9 ms |
-| CEL pointwise, 100k cells | 222.8 ms |
-| Noise, 10k | 396.8 µs |
-| Noise, 100k | 3.024 ms |
-| Gradient, 10k synthetic chain | 232.5 µs |
-| Diffuse, 10k synthetic chain, one iteration | 317 µs |
-| Accumulate, 10k synthetic chain | 103.1 µs |
+| CEL pointwise, 10k cells, `x * 2.0 + 1.0` (program compiled once) | 25.23 ms |
+| CEL pointwise, 100k cells | 217.7 ms |
+| Noise, 10k | 338.4 µs |
+| Noise, 100k | 2.754 ms |
+| Gradient, 10k synthetic chain | 224.6 µs |
+| Diffuse, 10k synthetic chain, one iteration | 278.9 µs |
+| Accumulate, 10k synthetic chain | 99.25 µs |
 
-CEL cost scales near-linearly at roughly 2.2–2.4 microseconds per cell on this
+CEL cost scales near-linearly at roughly 2.2–2.5 microseconds per cell on this
 machine. This is materially slower than native field kernels and deserves
 attention, but it does not show pathological growth over the measured 10x
 workload increase. No custom expression evaluator was substituted.
@@ -43,6 +43,8 @@ workload increase. No custom expression evaluator was substituted.
 - [x] `pointwise`: public CEL compile/execute path with named scalar-field and scalar bindings; synthetic arithmetic tolerance <1e-12; nonnumeric results rejected.
 - [x] `vector_expr`: exactly three CEL component sources, numeric checks through pointwise evaluation, per-cell DVec3 assembly and tangent projection; tangent criterion <1e-10 tested on every test output.
 - [x] Generic Program dispatcher resolves named `State`, `NodeOutput`, `Parameter`, and `LiteralScalar` bindings for pointwise/vector_expr. Integration test dispatches pointwise then vector_expr.
+- [x] External inputs use `execute_with_inputs(program, state, &BTreeMap<String, RuntimeValue>)`; `RuntimeValue` supports scalar, any `muse_types::Field`, and Network. CEL bindings resolve scalar/scalar-field variants, and fixed-port field dispatch resolves external Field values. `execute` remains a convenience wrapper with an empty input map.
+- [x] Missing, unused/unknown, and mismatched external inputs return distinct `MissingInput`, `UnknownInput`, and `InputType` errors.
 - [x] `neighbor_sample`: exact toy graph aggregate.
 - [x] `gradient`: constant-field magnitude <1e-10.
 - [x] `laplacian`: constant-field magnitude <1e-10.
@@ -58,7 +60,7 @@ workload increase. No custom expression evaluator was substituted.
 ## Frozen-contract limitations
 
 - Generic `reduce` returns `UnsupportedConfiguration`: `ValueRef` variants are `Input(String)`, `Parameter(String)`, `NodeOutput`, `State(String)`, and `LiteralScalar(f64)`. None can encode the required string operation (`mean`, `min`, `max`, `sum`) as an operator argument. The direct reduce kernel supports all four operations; no default operation is silently selected in dispatch.
-- `execute` receives `WorldState` but no external input map. Consequently a CEL binding using `ValueRef::Input` returns an explicit unsupported-configuration error; named State/NodeOutput and numeric Parameter/LiteralScalar binding forms are supported.
+- `execute` remains a convenience wrapper using no external inputs; callers supplying `ValueRef::Input` use `execute_with_inputs` and the executor-local `RuntimeValue` map. No shared IR types or contracts were changed.
 - Scalar operator configs (`constant.value`, `noise.scale`, `diffuse.rate`, `diffuse.iterations`) use representable `LiteralScalar`/`Parameter` refs. Diffusion iterations must be an integral nonnegative numeric value.
 
 No frozen contract or shared crate was changed.
