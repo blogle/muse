@@ -6,4 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+glam.workspace = true
+hexasphere.workspace = true
 muse-types = { path = "../muse-types" }
+
+[dev-dependencies]
+divan.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "geometry"
+harness = false
