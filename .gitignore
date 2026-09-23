@@ -1,3 +1,4 @@
 /target/
+/experiments/incremental-runtime/target/
 /.direnv/
 /apps/viewer/node_modules/
