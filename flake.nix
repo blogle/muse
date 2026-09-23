@@ -51,6 +51,11 @@
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         in {
           fmt = craneLib.cargoFmt commonArgs;
+          check = craneLib.cargoBuild (commonArgs // {
+            inherit cargoArtifacts;
+            cargoExtraArgs = "--workspace";
+            cargoBuildCommand = "cargoWithProfile check";
+          });
           clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings";
