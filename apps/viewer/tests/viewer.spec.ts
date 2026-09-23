@@ -13,6 +13,7 @@ test('loads canonical snapshots and supports generic field overlays', async ({ p
   await expect(page.locator('#scalar-select')).toHaveValue('elevation');
   await page.screenshot({ path: 'test-results/viewer-elevation.png' });
   await page.selectOption('#scalar-select', 'precipitation');
+  await expect(page.locator('#scalar-select')).toHaveValue('precipitation');
   await page.selectOption('#vector-select', 'wind');
   await page.selectOption('#network-select', 'rivers');
   await expect(page.locator('#viewer canvas')).toBeVisible();
