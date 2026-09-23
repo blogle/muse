@@ -1,0 +1,9 @@
+version: 1
+programs:
+  generate:
+    nodes:
+      source:
+        op: constant
+        args: {value: 1.0}
+    outputs:
+      value: $node.source.value

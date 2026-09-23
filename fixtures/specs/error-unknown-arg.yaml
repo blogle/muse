@@ -1,0 +1,7 @@
+programs:
+  generate:
+    nodes:
+      value:
+        op: laplacian
+        args:
+          unexpected: 1.0

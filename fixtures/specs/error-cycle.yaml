@@ -1,0 +1,9 @@
+programs:
+  generate:
+    nodes:
+      a:
+        op: laplacian
+        args: {field: $node.b.value}
+      b:
+        op: laplacian
+        args: {field: $node.a.value}

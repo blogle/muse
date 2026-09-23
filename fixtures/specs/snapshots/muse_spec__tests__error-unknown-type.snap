@@ -1,0 +1,6 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+ERROR
+TypeMismatch at recipes.unsupported_schema.inputs.source: unsupported declared type temperature_field; expected scalar, scalar_field, vector_field, bool_field, category_field, index_field, or network

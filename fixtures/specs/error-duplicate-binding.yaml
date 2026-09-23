@@ -1,0 +1,12 @@
+inputs:
+  source: scalar_field
+programs:
+  generate:
+    nodes:
+      calculate:
+        op: pointwise
+        inputs:
+          amount: $input.source
+        params:
+          amount: 1.0
+        expr: amount + 1.0
