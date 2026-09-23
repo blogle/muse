@@ -10,6 +10,9 @@ separate path for reproducible CI and optimized production artifacts. Read
 [`references/guidelines.md`](references/guidelines.md) for the complete project
 guidance before changing profiles, caching, CI, parallelism, dependencies, or
 release behavior.
+Read `../../../docs/development-policy.md` before dependency, architecture, or
+performance decisions. Root `[workspace.dependencies]` is coordinator-owned;
+package manifests use workspace dependencies only.
 
 ## Required workflow
 

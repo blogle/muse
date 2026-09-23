@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v21
+      - name: Dependency policy
+        run: nix develop --command cargo deny check
+      - name: Bench harness
+        run: nix develop --command cargo bench --workspace
+      - name: Reproducible checks
+        run: nix flake check --accept-flake-config

@@ -1,6 +1,6 @@
 # muse
 
-Minimal Rust crate bootstrap with a reproducible Nix development shell.
+MUSE compiler and execution-engine bootstrap with a reproducible Nix environment.
 
 ## Development
 
@@ -10,19 +10,25 @@ its untracked `target/` directory between commands.
 
 ```sh
 nix develop
-cargo check
-cargo test
+cargo check --workspace
+cargo nextest run --workspace
 ```
 
 Before completing Rust changes, run formatting, the narrowest relevant tests,
 then broader validation:
 
 ```sh
-cargo fmt -- --check
-cargo check
-cargo test
-cargo clippy -- -D warnings
+cargo nextest run --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo deny check
+cargo build --workspace --release
+cargo bench --workspace
 nix flake check
 ```
 
-See `AGENTS.md` and the repository-local skills for mandatory agent workflow.
+`just` exposes aliases for these commands; the commands above remain authoritative.
+`just profile-coz` intentionally fails until a canonical simulation workload exists.
+
+See `AGENTS.md`, `docs/development-policy.md`, and the repository-local skills for
+mandatory agent workflow.
