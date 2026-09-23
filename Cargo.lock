@@ -750,21 +750,37 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "muse-geom",
+ "muse-ops",
+ "muse-spec",
+ "muse-types",
+ "serde_json",
 ]
 
 [[package]]
 name = "muse-geom"
 version = "0.1.0"
 dependencies = [
+ "divan",
+ "glam",
+ "hexasphere",
  "muse-types",
+ "proptest",
 ]
 
 [[package]]
 name = "muse-ops"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "cel",
+ "divan",
+ "fastnoise-lite",
+ "glam",
  "muse-types",
+ "rand_chacha 0.10.0",
  "rayon",
+ "thiserror",
 ]
 
 [[package]]
@@ -772,10 +788,13 @@ name = "muse-spec"
 version = "0.1.0"
 dependencies = [
  "cel",
+ "insta",
  "muse-types",
  "petgraph",
  "serde",
  "serde-saphyr",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
