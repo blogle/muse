@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MUSE Snapshot Viewer</title>
+  </head>
+  <body>
+    <main class="layout">
+      <section class="toolbar" aria-label="Snapshot controls">
+        <h1>MUSE <span>Snapshot Viewer</span></h1>
+        <label>Snapshot<select id="step-select" aria-label="Snapshot"></select></label>
+        <label>Scalar field<select id="scalar-select" aria-label="Scalar field"></select></label>
+        <label>Vector field<select id="vector-select" aria-label="Vector field"></select></label>
+        <label>Network<select id="network-select" aria-label="Network"></select></label>
+        <button id="reset-camera" type="button">Reset camera</button>
+        <div id="range" class="range" aria-live="polite"></div>
+        <div id="hover" class="hover" aria-live="polite">Hover a cell to inspect it</div>
+        <p class="hint">Drag to rotate · scroll to zoom</p>
+      </section>
+      <div id="viewer" aria-label="Interactive globe"></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
