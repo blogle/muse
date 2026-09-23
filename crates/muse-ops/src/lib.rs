@@ -15,9 +15,12 @@ pub enum OperatorError {
     NotImplemented(String),
     #[error("CEL error: {0}")]
     Cel(String),
+    #[error("unsupported operator configuration: {0}")]
+    UnsupportedConfiguration(String),
 }
 
 pub type Result<T> = std::result::Result<T, OperatorError>;
+type CelBindings = (BTreeMap<String, Vec<f64>>, BTreeMap<String, f64>);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -358,6 +361,32 @@ pub fn pointwise(
     PointwiseProgram::compile(source)?.execute(mesh, bindings, parameters)
 }
 
+/// Evaluate the three component expressions and project their result into each
+/// cell's local tangent plane.
+pub fn vector_expression(
+    mesh: &Mesh,
+    sources: &[String],
+    bindings: &BTreeMap<String, Vec<f64>>,
+    parameters: &BTreeMap<String, f64>,
+) -> Result<Vec<DVec3>> {
+    if sources.len() != 3 {
+        return Err(OperatorError::Cel(format!(
+            "vector_expr requires exactly 3 CEL expressions for x/y/z components; got {}",
+            sources.len()
+        )));
+    }
+    let x = pointwise(mesh, &sources[0], bindings, parameters)?;
+    let y = pointwise(mesh, &sources[1], bindings, parameters)?;
+    let z = pointwise(mesh, &sources[2], bindings, parameters)?;
+    let vectors: Vec<_> = x
+        .into_iter()
+        .zip(y)
+        .zip(z)
+        .map(|((x, y), z)| DVec3::new(x, y, z))
+        .collect();
+    vector_expr(mesh, &vectors)
+}
+
 /// Run the IR in its supplied topological order; expression argument conventions are
 /// deliberately read from the node's named bindings and the frozen `args` contract.
 pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
@@ -396,14 +425,71 @@ pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
                 ))),
             }
         };
+        let expression_bindings = || -> Result<CelBindings> {
+            let mut fields = BTreeMap::new();
+            let mut scalars = BTreeMap::new();
+            for (name, reference) in &node.args {
+                match reference {
+                    ValueRef::LiteralScalar(value) => {
+                        scalars.insert(name.clone(), *value);
+                    }
+                    ValueRef::Parameter(parameter) => {
+                        let value = state.parameters.get(parameter).copied().ok_or_else(|| {
+                            OperatorError::Invalid(format!("missing parameter {parameter}"))
+                        })?;
+                        scalars.insert(name.clone(), value);
+                    }
+                    ValueRef::State(field_name) => match state.fields.get(field_name) {
+                        Some(Field::Scalar(values)) => {
+                            fields.insert(name.clone(), values.clone());
+                        }
+                        Some(_) => {
+                            return Err(OperatorError::Invalid(format!(
+                                "CEL binding {name} must reference a scalar field"
+                            )));
+                        }
+                        None => {
+                            return Err(OperatorError::Invalid(format!(
+                                "missing state field {field_name}"
+                            )));
+                        }
+                    },
+                    ValueRef::NodeOutput {
+                        node: source_node,
+                        output,
+                    } => match store.get(&format!("{source_node}.{output}")) {
+                        Some(Value::Field(Field::Scalar(values))) => {
+                            fields.insert(name.clone(), values.clone());
+                        }
+                        Some(_) => {
+                            return Err(OperatorError::Invalid(format!(
+                                "CEL binding {name} must reference a scalar field"
+                            )));
+                        }
+                        None => {
+                            return Err(OperatorError::Invalid(format!(
+                                "missing node output {source_node}.{output}"
+                            )));
+                        }
+                    },
+                    ValueRef::Input(input) => {
+                        return Err(OperatorError::UnsupportedConfiguration(format!(
+                            "CEL input binding {name} refers to external input {input}, but Program execution receives only WorldState"
+                        )));
+                    }
+                }
+            }
+            Ok((fields, scalars))
+        };
         let output = match node.op.as_str() {
             "constant" => Value::Field(Field::Scalar(constant(&state.mesh, scalar("value")?))),
-            "noise" => Value::Field(Field::Scalar(noise(
-                &state.mesh,
-                state.seed,
-                &node.id,
-                scalar("scale").unwrap_or(1.0),
-            ))),
+            "noise" => {
+                let scale = match node.args.get("scale") {
+                    Some(_) => scalar("scale")?,
+                    None => 1.0,
+                };
+                Value::Field(Field::Scalar(noise(&state.mesh, state.seed, &node.id, scale)))
+            }
             "neighbor_sample" => match field("field")? {
                 Field::Scalar(v) => Value::Field(Field::Scalar(neighbor_sample(&state.mesh, &v)?)),
                 _ => return Err(OperatorError::Invalid("field must be scalar".into())),
@@ -417,12 +503,13 @@ pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
                 _ => return Err(OperatorError::Invalid("field must be scalar".into())),
             },
             "diffuse" => match field("field")? {
-                Field::Scalar(v) => Value::Field(Field::Scalar(diffuse(
-                    &state.mesh,
-                    &v,
-                    scalar("rate")?,
-                    scalar("iterations")? as usize,
-                )?)),
+                Field::Scalar(v) => {
+                    let count = scalar("iterations")?;
+                    if count < 0.0 || count.fract() != 0.0 || count > usize::MAX as f64 {
+                        return Err(OperatorError::Invalid("diffuse iterations must be a nonnegative integer".into()));
+                    }
+                    Value::Field(Field::Scalar(diffuse(&state.mesh, &v, scalar("rate")?, count as usize)?))
+                }
                 _ => return Err(OperatorError::Invalid("field must be scalar".into())),
             },
             "boundary_strength" => match field("labels")? {
@@ -457,17 +544,24 @@ pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
                     }
                 }
             }
-            "reduce" => match field("values")? {
-                Field::Scalar(v) => Value::Scalar(reduce(&v, "mean")?),
-                _ => return Err(OperatorError::Invalid("values must be scalar".into())),
-            },
+            "reduce" => return Err(OperatorError::UnsupportedConfiguration(
+                "reduce requires a string operation (mean/min/max/sum), but frozen ValueRef represents only scalar literals, fields, parameters, and references; dispatch cannot select an operation".into(),
+            )),
             "voronoi_labels" | "advect" | "network_threshold" => {
                 return Err(OperatorError::NotImplemented(node.op.clone()));
             }
-            "pointwise" | "vector_expr" => return Err(OperatorError::Cel(
-                "expression execution requires CEL binding configuration; use execute_expression"
-                    .into(),
-            )),
+            "pointwise" => {
+                if node.cel.len() != 1 {
+                    return Err(OperatorError::Cel(format!("pointwise node {} requires exactly 1 CEL expression; got {}", node.id, node.cel.len())));
+                }
+                let (bindings, parameters) = expression_bindings()?;
+                Value::Field(Field::Scalar(pointwise(&state.mesh, node.cel[0].source(), &bindings, &parameters)?))
+            }
+            "vector_expr" => {
+                let (bindings, parameters) = expression_bindings()?;
+                let sources: Vec<_> = node.cel.iter().map(|expression| expression.source().to_owned()).collect();
+                Value::Field(Field::Vector(vector_expression(&state.mesh, &sources, &bindings, &parameters)?))
+            }
             _ => {
                 return Err(OperatorError::Invalid(format!(
                     "unknown operator {}",
@@ -483,6 +577,7 @@ pub fn execute(program: &Program, state: &WorldState) -> Result<FieldStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use muse_types::{CompiledExpressionHandle, CompiledNode, StateUpdate};
     fn line_mesh(n: usize) -> Mesh {
         Mesh {
             positions: (0..n).map(|i| DVec3::new(i as f64, 0.0, 0.0)).collect(),
@@ -527,10 +622,19 @@ mod tests {
             vec![1., 3., 6.]
         );
         assert_eq!(reduce(&[1., 2., 3.], "mean").unwrap(), 2.);
+        assert_eq!(reduce(&[1., 2., 3.], "min").unwrap(), 1.);
+        assert_eq!(reduce(&[1., 2., 3.], "max").unwrap(), 3.);
+        assert_eq!(reduce(&[1., 2., 3.], "sum").unwrap(), 6.);
+        assert_eq!(
+            accumulate(&[1, 3, 3, 3], &[1., 2., 3., 4.]).unwrap(),
+            vec![1., 3., 3., 10.]
+        );
     }
     #[test]
     fn uniform_and_diffusion_invariants() {
         let m = line_mesh(6);
+        let constant_gradient = gradient(&m, &[4.; 6]).unwrap();
+        assert!(constant_gradient.iter().all(|v| v.length() < 1e-10));
         assert!(
             laplacian(&m, &[4.; 6])
                 .unwrap()
@@ -539,6 +643,13 @@ mod tests {
         );
         assert_eq!(diffuse(&m, &[4.; 6], 0.5, 3).unwrap(), vec![4.; 6]);
         assert_eq!(boundary_strength(&m, &[1; 6]).unwrap(), vec![0.; 6]);
+        let before = [0., 1., 0., 3., -1., 2.];
+        let after = diffuse(&m, &before, 0.2, 1).unwrap();
+        let variance = |values: &[f64]| {
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64
+        };
+        assert!(variance(&after) <= variance(&before) + 1e-12);
     }
     #[test]
     fn distance_and_flow_are_valid() {
@@ -551,5 +662,175 @@ mod tests {
             flow_direction(&m, &[3., 2., 1., 0.]).unwrap(),
             vec![1, 2, 3, 3]
         );
+        let receivers = flow_direction(&m, &[3., 2., 1., 0.]).unwrap();
+        for (i, &r) in receivers.iter().enumerate() {
+            assert!(r as usize == i || m.neighbors[i].contains(&r));
+            if r as usize != i {
+                assert!([3., 2., 1., 0.][r as usize] < [3., 2., 1., 0.][i]);
+            }
+        }
+        let distances = distance_to_mask(&m, &[true, false, false, false]).unwrap();
+        assert_eq!(distances[0], 0.0);
+        assert!(distances[1..].iter().all(|d| *d >= 0.0));
+    }
+
+    fn sphere_mesh() -> Mesh {
+        let positions = vec![DVec3::X, DVec3::Y, DVec3::Z, -DVec3::X];
+        Mesh {
+            positions,
+            triangles: vec![],
+            neighbors: vec![vec![1, 2, 3], vec![0, 2], vec![0, 1, 3], vec![0, 2]],
+        }
+    }
+
+    #[test]
+    fn generic_program_dispatches_pointwise_then_tangent_vector_expr() {
+        let mesh = sphere_mesh();
+        let state = WorldState {
+            mesh: mesh.clone(),
+            fields: BTreeMap::from([("source".into(), Field::Scalar(vec![1.0, 2.0, 3.0, 4.0]))]),
+            networks: BTreeMap::new(),
+            parameters: BTreeMap::from([("factor".into(), 2.0)]),
+            step: 0,
+            seed: 11,
+        };
+        let program = Program {
+            nodes: vec![
+                CompiledNode {
+                    id: "p".into(),
+                    op: "pointwise".into(),
+                    args: BTreeMap::from([
+                        ("x".into(), ValueRef::State("source".into())),
+                        ("factor".into(), ValueRef::Parameter("factor".into())),
+                        ("offset".into(), ValueRef::LiteralScalar(1.0)),
+                    ]),
+                    cel: vec![CompiledExpressionHandle::from_source("x * factor + offset")],
+                },
+                CompiledNode {
+                    id: "v".into(),
+                    op: "vector_expr".into(),
+                    args: BTreeMap::from([
+                        (
+                            "x".into(),
+                            ValueRef::NodeOutput {
+                                node: "p".into(),
+                                output: "value".into(),
+                            },
+                        ),
+                        ("zero".into(), ValueRef::LiteralScalar(0.0)),
+                    ]),
+                    cel: vec![
+                        CompiledExpressionHandle::from_source("x"),
+                        CompiledExpressionHandle::from_source("zero"),
+                        CompiledExpressionHandle::from_source("1.0"),
+                    ],
+                },
+            ],
+            updates: Vec::<StateUpdate>::new(),
+        };
+        let output = execute(&program, &state).unwrap();
+        assert_eq!(
+            output.scalar_field("p.value").unwrap(),
+            &[3.0, 5.0, 7.0, 9.0]
+        );
+        let Value::Field(Field::Vector(vectors)) = output.get("v.value").unwrap() else {
+            panic!("expected vector field");
+        };
+        for (p, v) in mesh.positions.iter().zip(vectors) {
+            assert!(p.dot(*v).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn vector_expr_rejects_wrong_component_count_and_nonnumeric_results() {
+        let m = sphere_mesh();
+        assert!(
+            vector_expression(&m, &["1.0".into()], &BTreeMap::new(), &BTreeMap::new())
+                .unwrap_err()
+                .to_string()
+                .contains("exactly 3")
+        );
+        assert!(
+            vector_expression(
+                &m,
+                &["true".into(), "0.0".into(), "0.0".into()],
+                &BTreeMap::new(),
+                &BTreeMap::new()
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("number")
+        );
+    }
+
+    #[test]
+    fn parallel_operators_are_thread_count_deterministic() {
+        let mesh = sphere_mesh();
+        let values = vec![0.25, 1.5, -2.0, 3.0];
+        let labels = vec![0, 0, 1, 1];
+        let mask = vec![true, false, false, true];
+        let bindings = BTreeMap::from([("x".into(), values.clone())]);
+        let expr = PointwiseProgram::compile("x * 1.25 + 0.5").unwrap();
+        let single = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let multi = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let run = |pool: &rayon::ThreadPool| {
+            pool.install(|| {
+                (
+                    noise(&mesh, 44, "node", 1.0),
+                    neighbor_sample(&mesh, &values).unwrap(),
+                    gradient(&mesh, &values).unwrap(),
+                    laplacian(&mesh, &values).unwrap(),
+                    diffuse(&mesh, &values, 0.2, 2).unwrap(),
+                    boundary_strength(&mesh, &labels).unwrap(),
+                    flow_direction(&mesh, &values).unwrap(),
+                    vector_expr(&mesh, &[DVec3::ONE; 4]).unwrap(),
+                    expr.execute(&mesh, &bindings, &BTreeMap::new()).unwrap(),
+                    vector_expression(
+                        &mesh,
+                        &["x".into(), "0.0".into(), "1.0".into()],
+                        &bindings,
+                        &BTreeMap::new(),
+                    )
+                    .unwrap(),
+                )
+            })
+        };
+        assert_eq!(run(&single), run(&multi));
+        assert_eq!(
+            distance_to_mask(&mesh, &mask).unwrap(),
+            single.install(|| distance_to_mask(&mesh, &mask).unwrap())
+        );
+    }
+
+    #[test]
+    fn generic_reduce_reports_unrepresentable_operation_configuration() {
+        let mesh = line_mesh(2);
+        let state = WorldState {
+            mesh,
+            fields: BTreeMap::from([("x".into(), Field::Scalar(vec![1., 2.]))]),
+            networks: BTreeMap::new(),
+            parameters: BTreeMap::new(),
+            step: 0,
+            seed: 0,
+        };
+        let program = Program {
+            nodes: vec![CompiledNode {
+                id: "r".into(),
+                op: "reduce".into(),
+                args: BTreeMap::from([("values".into(), ValueRef::State("x".into()))]),
+                cel: vec![],
+            }],
+            updates: vec![],
+        };
+        assert!(matches!(
+            execute(&program, &state),
+            Err(OperatorError::UnsupportedConfiguration(_))
+        ));
     }
 }
