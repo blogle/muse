@@ -1,0 +1,16 @@
+{
+  "mesh": {
+    "positions": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    "triangles": [[0, 1, 2]],
+    "neighbors": [[1, 2], [0, 2], [0, 1]]
+  },
+  "fields": {
+    "elevation": { "Scalar": [0.1, 0.4, -0.2] },
+    "precipitation": { "Scalar": [0.8, 0.3, 0.6] },
+    "wind": { "Vector": [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }
+  },
+  "networks": { "rivers": { "edges": [[0, 1], [1, 2]], "values": [1.5, 0.7] } },
+  "parameters": { "intensity": 1.0 },
+  "step": 0,
+  "seed": 42
+}
