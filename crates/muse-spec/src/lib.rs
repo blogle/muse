@@ -135,6 +135,7 @@ pub fn compile_program(source: &str, program_name: &str) -> Result<Program, Comp
 }
 
 fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, CompileError> {
+    validate_declared_types(&doc)?;
     let (name, section) = match selected {
         Some(name) => doc.programs.get_key_value(name).ok_or_else(|| {
             CompileError::new(
@@ -487,6 +488,39 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
     Ok(Program { nodes, updates })
 }
 
+fn validate_declared_types(doc: &Document) -> Result<(), CompileError> {
+    for (name, ty) in &doc.inputs {
+        declared_type(ty, &format!("inputs.{name}"))?;
+    }
+    for (name, parameter) in &doc.parameters {
+        declared_type(&parameter.ty, &format!("parameters.{name}.type"))?;
+    }
+    for (recipe_name, recipe) in &doc.recipes {
+        for (name, ty) in &recipe.inputs {
+            declared_type(ty, &format!("recipes.{recipe_name}.inputs.{name}"))?;
+        }
+        for (name, parameter) in &recipe.parameters {
+            declared_type(
+                &parameter.ty,
+                &format!("recipes.{recipe_name}.parameters.{name}.type"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn declared_type(value: &str, path: &str) -> Result<ValueType, CompileError> {
+    parse_type(value).ok_or_else(|| {
+        CompileError::new(
+            ErrorCategory::TypeMismatch,
+            path,
+            format!(
+                "unsupported declared type {value}; expected scalar, scalar_field, vector_field, bool_field, category_field, index_field, or network"
+            ),
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn expand_nodes(
     source: &BTreeMap<String, NodeSpec>,
@@ -542,13 +576,13 @@ fn expand_nodes(
                 }
             }
             for (name, expected) in &recipe.inputs {
-                if let Some(expected_type) = parse_type(expected) {
-                    binding_checks.push((
-                        format!("{path}.nodes.{full_id}.inputs.{name}"),
-                        substitute(&bindings[name], input_bindings, parameter_bindings),
-                        expected_type,
-                    ));
-                }
+                let declaration_path = format!("recipes.{recipe_name}.inputs.{name}");
+                let expected_type = declared_type(expected, &declaration_path)?;
+                binding_checks.push((
+                    format!("{path}.nodes.{full_id}.inputs.{name}"),
+                    substitute(&bindings[name], input_bindings, parameter_bindings),
+                    expected_type,
+                ));
             }
             let mut bound_inputs = input_bindings.clone();
             for (name, value) in bindings {
@@ -560,13 +594,13 @@ fn expand_nodes(
             let mut bound_params = parameter_bindings.clone();
             for (name, parameter) in &recipe.parameters {
                 if let Some(value) = spec.params.get(name) {
-                    if let Some(expected_type) = parse_type(&parameter.ty) {
-                        binding_checks.push((
-                            format!("{path}.nodes.{full_id}.params.{name}"),
-                            substitute(value, input_bindings, parameter_bindings),
-                            expected_type,
-                        ));
-                    }
+                    let declaration_path = format!("recipes.{recipe_name}.parameters.{name}.type");
+                    let expected_type = declared_type(&parameter.ty, &declaration_path)?;
+                    binding_checks.push((
+                        format!("{path}.nodes.{full_id}.params.{name}"),
+                        substitute(value, input_bindings, parameter_bindings),
+                        expected_type,
+                    ));
                     bound_params.insert(
                         name.clone(),
                         substitute(value, input_bindings, parameter_bindings),
@@ -940,6 +974,29 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_types_fail_at_each_schema_declaration_site() {
+        for (source, expected_path) in [
+            (
+                "inputs:\n  unused: temperature_field\nprograms:\n  generate: {}\n",
+                "inputs.unused",
+            ),
+            (
+                "parameters:\n  unused:\n    type: temperature_field\nprograms:\n  generate: {}\n",
+                "parameters.unused.type",
+            ),
+            (
+                "recipes:\n  unused:\n    parameters:\n      p:\n        type: temperature_field\nprograms:\n  generate: {}\n",
+                "recipes.unused.parameters.p.type",
+            ),
+        ] {
+            let error = compile(source).unwrap_err();
+            assert_eq!(error.category, ErrorCategory::TypeMismatch);
+            assert!(error.to_string().contains(expected_path));
+            assert!(error.to_string().contains("temperature_field"));
+        }
+    }
+
+    #[test]
     fn fixture_results_are_snapshot_stable() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/specs");
         for entry in std::fs::read_dir(root).unwrap() {
@@ -960,9 +1017,10 @@ mod tests {
                 "error-missing-arg" | "error-missing-config" => Some("MissingArgument"),
                 "error-unknown-arg" | "error-duplicate-binding" => Some("UnknownArgument"),
                 "error-unknown-parameter" => Some("UnknownParameter"),
-                "error-type-mismatch" | "error-recipe-binding" | "error-expression-binding" => {
-                    Some("TypeMismatch")
-                }
+                "error-type-mismatch"
+                | "error-recipe-binding"
+                | "error-expression-binding"
+                | "error-unknown-type" => Some("TypeMismatch"),
                 "error-recipe-recursion" => Some("RecipeRecursion"),
                 "error-cycle" => Some("DependencyCycle"),
                 "error-invalid-cel" => Some("InvalidCel"),
@@ -975,6 +1033,11 @@ mod tests {
                     "{} did not report {category}: {result}",
                     path.display()
                 );
+            }
+            if path.file_stem().unwrap() == "error-unknown-type" {
+                assert!(result.contains("recipes.unsupported_schema.inputs.source"));
+                assert!(result.contains("temperature_field"));
+                assert!(result.contains("expected scalar, scalar_field, vector_field"));
             }
             if path.file_stem().unwrap() == "valid-recipe-inclusion" {
                 let repeated = compile(&source).unwrap();
