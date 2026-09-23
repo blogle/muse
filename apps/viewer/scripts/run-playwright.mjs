@@ -3,9 +3,9 @@ import { spawnSync } from 'node:child_process';
 
 const env = { ...process.env };
 
-for (const variable of ['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH', 'FONTCONFIG_FILE']) {
+for (const variable of ['PLAYWRIGHT_BROWSERS_PATH', 'FONTCONFIG_FILE']) {
   if (!env[variable]) {
-    throw new Error(`${variable} must point to the Nix-provided Playwright browser/font config before running pnpm test`);
+    throw new Error(`${variable} must be set by the development environment before running pnpm test`);
   }
   if (!existsSync(env[variable])) {
     throw new Error(`${variable} does not exist: ${env[variable]}`);
