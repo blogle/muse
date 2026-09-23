@@ -75,6 +75,25 @@ debug = false
 [profile.ci]
 inherits = "dev"
 incremental = false
+opt-level = 0
+codegen-units = 256
+debug = "line-tables-only"
+
+[profile.ci-release]
+inherits = "release"
+opt-level = 1
+incremental = false
+codegen-units = 256
+lto = false
+debug = false
+
+[profile.coz]
+inherits = "release"
+opt-level = 2
+incremental = false
+codegen-units = 256
+lto = false
+debug = "line-tables-only"
 
 [profile.release]
 codegen-units = 1
