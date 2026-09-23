@@ -7,6 +7,9 @@ nextest:
 check:
     ./scripts/check.sh
 
+wave1-check:
+    ./scripts/wave1-check.sh
+
 fmt:
     cargo fmt --all -- --check
 

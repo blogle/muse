@@ -1,0 +1,24 @@
+version: 1
+programs:
+  generate:
+    nodes:
+      baseline:
+        op: constant
+        args: {value: 0.0}
+      variation:
+        op: noise
+        args: {scale: 1.0}
+      combined:
+        op: pointwise
+        inputs:
+          baseline: $node.baseline.value
+          variation: $node.variation.value
+        expr: baseline + variation
+      relaxed:
+        op: diffuse
+        args:
+          field: $node.combined.value
+          rate: 0.2
+          iterations: 1
+    updates:
+      debug_scalar: $node.relaxed.value
