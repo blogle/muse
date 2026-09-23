@@ -135,15 +135,19 @@ function inspect(event: PointerEvent) {
 }
 
 async function load() {
-  const paths = ['snapshots/canonical-small.json', 'snapshots/canonical-small-step1.json'];
+  const paths = [
+    { path: 'snapshots/canonical-small.json', label: 'Step 0' },
+    { path: 'snapshots/canonical-small-step1.json', label: 'Step 1' },
+    { path: 'snapshots/wave1-generated.json', label: 'Generated debug' },
+  ];
   const snapshots = await Promise.all(paths.map(async (path) => {
-    const response = await fetch(`/${path}`);
-    if (!response.ok) throw new Error(`Unable to load ${path}: ${response.status}`);
+    const response = await fetch(`/${path.path}`);
+    if (!response.ok) throw new Error(`Unable to load ${path.path}: ${response.status}`);
     return await response.json() as Snapshot;
   }));
-  options(stepSelect, snapshots.map((item) => String(item.step)));
+  stepSelect.replaceChildren(...paths.map((item, index) => new Option(item.label, String(index))));
   const chooseSnapshot = () => {
-    snapshot = snapshots[stepSelect.selectedIndex];
+    snapshot = snapshots[Number(stepSelect.value)];
     if (surface) scene.remove(surface);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(snapshot.mesh.positions.flat(), 3));

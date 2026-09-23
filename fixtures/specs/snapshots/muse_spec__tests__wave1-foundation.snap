@@ -1,0 +1,74 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+OK
+Program {
+    nodes: [
+        CompiledNode {
+            id: "variation",
+            op: "noise",
+            args: {
+                "scale": LiteralScalar(
+                    1.0,
+                ),
+            },
+            cel: [],
+        },
+        CompiledNode {
+            id: "baseline",
+            op: "constant",
+            args: {
+                "value": LiteralScalar(
+                    0.0,
+                ),
+            },
+            cel: [],
+        },
+        CompiledNode {
+            id: "combined",
+            op: "pointwise",
+            args: {
+                "baseline": NodeOutput {
+                    node: "baseline",
+                    output: "value",
+                },
+                "variation": NodeOutput {
+                    node: "variation",
+                    output: "value",
+                },
+            },
+            cel: [
+                CompiledExpressionHandle(
+                    "baseline + variation",
+                ),
+            ],
+        },
+        CompiledNode {
+            id: "relaxed",
+            op: "diffuse",
+            args: {
+                "field": NodeOutput {
+                    node: "combined",
+                    output: "value",
+                },
+                "iterations": LiteralScalar(
+                    1.0,
+                ),
+                "rate": LiteralScalar(
+                    0.2,
+                ),
+            },
+            cel: [],
+        },
+    ],
+    updates: [
+        StateUpdate {
+            field: "debug_scalar",
+            value: NodeOutput {
+                node: "relaxed",
+                output: "value",
+            },
+        },
+    ],
+}
