@@ -8,6 +8,7 @@
 
 - `crates/muse-cli/Cargo.toml`, `crates/muse-cli/src/main.rs` — runtime integration command and deterministic integration test.
 - `fixtures/specs/wave1-foundation.yaml` — compiler-schema example program.
+- `fixtures/specs/snapshots/muse_spec__tests__wave1-foundation.snap` — compiler-generated Insta golden for the foundation Program IR.
 - `fixtures/snapshots/wave1-generated.json` — generated canonical state.
 - `apps/viewer/src/main.ts`, `apps/viewer/tests/viewer.spec.ts` — selectable generated snapshot and generic smoke coverage.
 - `apps/viewer/test-results/wave1-generated.png` — generated-snapshot review capture.
@@ -37,7 +38,7 @@ cargo run -p muse-cli -- wave1-generate --spec fixtures/specs/wave1-foundation.y
 - `nix develop --command cargo test -p muse-cli` — pass, 1 integration test.
 - `nix develop --command cargo fmt --all -- --check` — pass.
 - `nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings` — pass.
-- `nix develop --command cargo nextest run --workspace` — 24/25 pass; one existing compiler fixture-snapshot harness failure for the newly required YAML (details below).
+- `nix develop --command cargo nextest run --workspace` — pass, 25/25 tests.
 - `nix develop --command cargo deny check` — pass, existing duplicate-version/license-allowance warnings only.
 - `nix develop --command nix flake check` — pass, all 6 x86_64-linux checks.
 - `nix develop --command pnpm --dir apps/viewer install --frozen-lockfile` — pass.
@@ -45,7 +46,9 @@ cargo run -p muse-cli -- wave1-generate --spec fixtures/specs/wave1-foundation.y
 - `nix develop --command pnpm --dir apps/viewer build` — pass (Vite reported the existing large-chunk advisory).
 - `nix develop --command pnpm --dir apps/viewer test` — pass, 1 Playwright test.
 - `git diff --check` — pass.
-- `nix develop --command just wave1-check` — halted at the same compiler fixture-snapshot test failure.
+- `nix develop --command just wave1-check` — pass; full Wave 1 gate returned exit 0.
+- `nix develop --command pnpm --dir apps/viewer test` — independent rerun pass, 1 Playwright test.
+- `nix develop --command env INSTA_UPDATE=always cargo nextest run -p muse-spec` — pass, 3/3 tests while producing the new golden through the fixture harness.
 
 ## Test results
 
@@ -68,12 +71,12 @@ Direct visual inspection shows a rounded, faceted globe with clearly visible cya
 - [x] Viewer discovers scalar fields generically, provides a generic generated snapshot label, and supports generated selection/hover.
 - [x] Playwright has no browser, page, request, or HTTP errors; screenshot visually inspected.
 - [x] No domain-specific world recipe/system, custom scheduler/parser/noise/geometry, or incremental framework was added.
-- [ ] Full workspace nextest / `just wave1-check` — blocked by compiler fixture harness requiring an IR golden snapshot for the newly added YAML.
+- [x] Full workspace nextest passes with the actual compiled-IR golden; complete `just wave1-check` passes.
 
 ## Deviations/blockers
 
-**Gate fixture-snapshot blocker (scope-bound).** `muse-spec::tests::fixture_results_are_snapshot_stable` scans `fixtures/specs/` and requires a matching compiler IR snapshot for every YAML file. Adding this required fixture produced `fixtures/specs/snapshots/muse_spec__tests__wave1-foundation.snap.new` containing an `OK` result and the expected four-node Program (noise and constant feeding pointwise, then diffuse; update `debug_scalar` from `relaxed.value`). That generated file was removed because compiler snapshot files are outside the explicitly permitted paths. Consequently the all-workspace nextest run fails only that test (24 other tests pass), and the gate script stops at nextest. Rust compilation, lint, deny, Nix flake, CLI integration, frontend, Playwright, generation, and diff checks passed independently. No compiler/runtime semantic mismatch was encountered.
+No unresolved deviations or blockers. The compiler fixture golden was generated and verified through the existing `muse-spec` snapshot test harness; it records the stable four-node Program IR and state update without timestamps or absolute machine paths. No compiler/runtime semantic mismatch was encountered.
 
 ## Wave 2 readiness observations
 
-The integration proves that the frozen YAML/Program/runtime boundary can produce a viewer-ready state without domain-specific Rust. The executor exposes generic node outputs while the CLI translates declared Program state updates into `WorldState`; the Wave 1 full-recompute model and contracts remain unchanged. The remaining gate issue is fixture-harness snapshot administration, not runtime capability.
+The integration proves that the frozen YAML/Program/runtime boundary can produce a viewer-ready state without domain-specific Rust. The executor exposes generic node outputs while the CLI translates declared Program state updates into `WorldState`; the Wave 1 full-recompute model and contracts remain unchanged. No Wave 1 gate issue remains after adding the compiled-IR golden.
