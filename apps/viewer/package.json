@@ -1,0 +1,9 @@
+{
+  "name": "@muse/viewer",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@12.3.4",
+  "devDependencies": {
+    "@playwright/test": "1.58.2"
+  }
+}

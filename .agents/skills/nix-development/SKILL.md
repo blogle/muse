@@ -9,6 +9,8 @@ Use Nix to define reproducible toolchains, environments, and artifacts. Use the
 native build system for fast mutable development loops. Read
 [`references/guidelines.md`](references/guidelines.md) for the complete project
 guidance before work involving derivations, CI, images, caching, or parallelism.
+Read `../../../docs/development-policy.md` before dependency or performance
+decisions; it is the canonical repository policy.
 
 ## Required workflow
 
