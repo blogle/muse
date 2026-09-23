@@ -1,7 +1,7 @@
 programs:
   generate:
     nodes:
-      source: {op: constant}
+      source: {op: constant, args: {value: 1.0}}
       bad:
         op: advect
         args:

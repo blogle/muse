@@ -1,0 +1,6 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+ERROR
+UnknownParameter at programs.generate.nodes.calculate.params.factor: unknown parameter missing

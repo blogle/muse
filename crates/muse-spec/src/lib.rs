@@ -62,7 +62,7 @@ struct Document {
     #[serde(default)]
     inputs: BTreeMap<String, String>,
     #[serde(default)]
-    parameters: BTreeMap<String, serde_json::Value>,
+    parameters: BTreeMap<String, ParameterSpec>,
     #[serde(default)]
     recipes: BTreeMap<String, Recipe>,
     programs: BTreeMap<String, Section>,
@@ -71,9 +71,25 @@ struct Document {
 #[derive(Clone, Debug, Default, Deserialize)]
 struct Recipe {
     #[serde(default)]
+    inputs: BTreeMap<String, String>,
+    #[serde(default)]
+    parameters: BTreeMap<String, ParameterSpec>,
+    #[serde(default)]
     nodes: BTreeMap<String, NodeSpec>,
     #[serde(default)]
-    _outputs: BTreeMap<String, String>,
+    outputs: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ParameterSpec {
+    #[serde(rename = "type", default = "scalar_type")]
+    ty: String,
+    #[serde(default)]
+    default: Option<serde_json::Value>,
+}
+
+fn scalar_type() -> String {
+    "scalar".to_owned()
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -136,10 +152,24 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
         })?,
     };
     let base = format!("programs.{name}");
-    let mut specs = section.nodes.clone();
-    expand_recipes(&mut specs, &doc.recipes, &base, &mut Vec::new())?;
+    let mut specs = BTreeMap::new();
+    let mut aliases = BTreeMap::new();
+    let mut binding_checks = Vec::new();
+    expand_nodes(
+        &section.nodes,
+        &doc.recipes,
+        &base,
+        "",
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &mut Vec::new(),
+        &mut specs,
+        &mut aliases,
+        &mut binding_checks,
+    )?;
     let mut compiled = BTreeMap::<String, CompiledNode>::new();
     let mut node_types = BTreeMap::<String, ValueType>::new();
+    let mut node_outputs = BTreeMap::<String, BTreeSet<String>>::new();
     for (node_name, spec) in &specs {
         if let Some(op) = &spec.op {
             let descriptor = operator_descriptor(op).ok_or_else(|| {
@@ -157,7 +187,47 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
                     .map(|port| port.ty)
                     .unwrap_or(ValueType::Scalar),
             );
+            node_outputs.insert(
+                node_name.clone(),
+                descriptor
+                    .outputs
+                    .iter()
+                    .map(|port| port.name.to_owned())
+                    .collect(),
+            );
         }
+    }
+    for (binding_path, reference, expected) in &binding_checks {
+        let actual = reference_type(
+            reference,
+            &node_types,
+            &doc.inputs,
+            &doc.parameters,
+            &aliases,
+        );
+        if actual != Some(*expected) {
+            return Err(CompileError::new(
+                ErrorCategory::TypeMismatch,
+                binding_path,
+                format!(
+                    "expected {expected:?}, got {} from {reference}",
+                    actual.map_or("unknown".to_owned(), |value| format!("{value:?}"))
+                ),
+            ));
+        }
+    }
+    for (alias, reference) in &aliases {
+        let mut dependencies = BTreeSet::new();
+        resolve(
+            reference,
+            &doc.inputs,
+            &doc.parameters,
+            &node_types,
+            &mut dependencies,
+            &format!("{base}.nodes.{alias}"),
+            &aliases,
+            &node_outputs,
+        )?;
     }
     for (node_name, spec) in &specs {
         let path = format!("{base}.nodes.{node_name}");
@@ -174,7 +244,9 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
         let mut args = BTreeMap::new();
         let mut dependency_names = BTreeSet::new();
         for (argument, raw) in &spec.args {
-            if !descriptor.inputs.iter().any(|port| port.name == argument) {
+            let config_type = config_argument(op, argument);
+            let port = descriptor.inputs.iter().find(|port| port.name == argument);
+            if port.is_none() && config_type.is_none() {
                 return Err(CompileError::new(
                     ErrorCategory::UnknownArgument,
                     format!("{path}.args.{argument}"),
@@ -199,20 +271,32 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
                 &node_types,
                 &mut dependency_names,
                 &format!("{path}.args.{argument}"),
+                &aliases,
+                &node_outputs,
             )?;
-            let expected = descriptor
-                .inputs
-                .iter()
-                .find(|port| port.name == argument)
-                .unwrap()
-                .ty;
-            check_type(
-                expected,
-                &value,
-                &text,
-                &format!("{path}.args.{argument}"),
-                &node_types,
-            )?;
+            if let Some(port) = port {
+                check_type(
+                    port.ty,
+                    &value,
+                    &text,
+                    &format!("{path}.args.{argument}"),
+                    &node_types,
+                    &doc.inputs,
+                    &doc.parameters,
+                    &aliases,
+                )?;
+            } else {
+                check_type(
+                    config_type.unwrap(),
+                    &value,
+                    &text,
+                    &format!("{path}.args.{argument}"),
+                    &node_types,
+                    &doc.inputs,
+                    &doc.parameters,
+                    &aliases,
+                )?;
+            }
             args.insert(argument.clone(), value);
         }
         for port in descriptor.inputs.iter().filter(|port| port.required) {
@@ -224,7 +308,28 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
                 ));
             }
         }
-        for (argument, text) in spec.inputs.iter().chain(spec.params.iter()) {
+        for &(key, required, _) in config_arguments(op) {
+            if required && !spec.args.contains_key(key) {
+                return Err(CompileError::new(
+                    ErrorCategory::MissingArgument,
+                    format!("{path}.args.{key}"),
+                    format!("required scalar configuration for {op} is missing"),
+                ));
+            }
+        }
+        if matches!(op, "pointwise" | "vector_expr")
+            && let Some(name) = spec
+                .inputs
+                .keys()
+                .find(|name| spec.params.contains_key(*name))
+        {
+            return Err(CompileError::new(
+                ErrorCategory::UnknownArgument,
+                format!("{path}.params.{name}"),
+                format!("binding {name} is declared as both input and parameter"),
+            ));
+        }
+        for (argument, text) in &spec.inputs {
             if op != "pointwise" && op != "vector_expr" {
                 return Err(CompileError::new(
                     ErrorCategory::UnknownArgument,
@@ -239,6 +344,53 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
                 &node_types,
                 &mut dependency_names,
                 &format!("{path}.inputs.{argument}"),
+                &aliases,
+                &node_outputs,
+            )?;
+            let expected = if op == "pointwise" {
+                ValueType::ScalarField
+            } else {
+                ValueType::VectorField
+            };
+            check_type(
+                expected,
+                &value,
+                text,
+                &format!("{path}.inputs.{argument}"),
+                &node_types,
+                &doc.inputs,
+                &doc.parameters,
+                &aliases,
+            )?;
+            args.insert(argument.clone(), value);
+        }
+        for (argument, text) in &spec.params {
+            if op != "pointwise" && op != "vector_expr" {
+                return Err(CompileError::new(
+                    ErrorCategory::UnknownArgument,
+                    format!("{path}.params.{argument}"),
+                    format!("operator {op} does not accept expression parameters"),
+                ));
+            }
+            let value = resolve(
+                text,
+                &doc.inputs,
+                &doc.parameters,
+                &node_types,
+                &mut dependency_names,
+                &format!("{path}.params.{argument}"),
+                &aliases,
+                &node_outputs,
+            )?;
+            check_type(
+                ValueType::Scalar,
+                &value,
+                text,
+                &format!("{path}.params.{argument}"),
+                &node_types,
+                &doc.inputs,
+                &doc.parameters,
+                &aliases,
             )?;
             args.insert(argument.clone(), value);
         }
@@ -277,15 +429,9 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
         .keys()
         .map(|id| (id.clone(), graph.add_node(id.clone())))
         .collect();
-    for (id, spec) in &specs {
-        let values = spec
-            .args
-            .values()
-            .filter_map(serde_json::Value::as_str)
-            .chain(spec.inputs.values().map(String::as_str))
-            .chain(spec.params.values().map(String::as_str));
-        for raw in values {
-            if let Some(node) = raw.strip_prefix("$node.").and_then(|v| v.split('.').next())
+    for (id, compiled_node) in &compiled {
+        for value in compiled_node.args.values() {
+            if let ValueRef::NodeOutput { node, .. } = value
                 && let (Some(&from), Some(&to)) = (indices.get(node), indices.get(id))
             {
                 graph.add_edge(from, to, ());
@@ -317,6 +463,8 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
             &node_types,
             &mut deps,
             &format!("{base}.updates.{field}"),
+            &aliases,
+            &node_outputs,
         )?;
         updates.push(StateUpdate {
             field: field.clone(),
@@ -332,66 +480,256 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
             &node_types,
             &mut deps,
             &format!("{base}.outputs.{field}"),
+            &aliases,
+            &node_outputs,
         )?;
     }
     Ok(Program { nodes, updates })
 }
 
-fn expand_recipes(
-    nodes: &mut BTreeMap<String, NodeSpec>,
+#[allow(clippy::too_many_arguments)]
+fn expand_nodes(
+    source: &BTreeMap<String, NodeSpec>,
     recipes: &BTreeMap<String, Recipe>,
     path: &str,
+    namespace: &str,
+    input_bindings: &BTreeMap<String, String>,
+    parameter_bindings: &BTreeMap<String, String>,
     stack: &mut Vec<String>,
+    output: &mut BTreeMap<String, NodeSpec>,
+    aliases: &mut BTreeMap<String, String>,
+    binding_checks: &mut Vec<(String, String, ValueType)>,
 ) -> Result<(), CompileError> {
-    let originals = std::mem::take(nodes);
-    for (id, mut spec) in originals {
-        if let Some(recipe_name) = spec.use_recipe.take() {
-            if stack.contains(&recipe_name) {
+    for (id, spec) in source {
+        let full_id = if namespace.is_empty() {
+            id.clone()
+        } else {
+            format!("{namespace}.{id}")
+        };
+        if let Some(recipe_name) = &spec.use_recipe {
+            let use_path = format!("{path}.nodes.{full_id}.use");
+            if stack.contains(recipe_name) {
                 return Err(CompileError::new(
                     ErrorCategory::RecipeRecursion,
-                    format!("{path}.nodes.{id}.use"),
+                    use_path,
                     format!("recursive recipe inclusion {recipe_name}"),
                 ));
             }
-            let recipe = recipes.get(&recipe_name).ok_or_else(|| {
+            let recipe = recipes.get(recipe_name).ok_or_else(|| {
                 CompileError::new(
                     ErrorCategory::UnknownReference,
-                    format!("{path}.nodes.{id}.use"),
+                    &use_path,
                     format!("unknown recipe {recipe_name}"),
                 )
             })?;
-            stack.push(recipe_name.clone());
-            let mut nested = recipe.nodes.clone();
-            expand_recipes(&mut nested, recipes, path, stack)?;
-            stack.pop();
-            for (nested_id, nested_spec) in nested {
-                let prefixed = format!("{id}.{nested_id}");
-                if nodes.insert(prefixed.clone(), nested_spec).is_some() {
+            let bindings = &spec.inputs;
+            for input in recipe.inputs.keys() {
+                if !bindings.contains_key(input) {
                     return Err(CompileError::new(
-                        ErrorCategory::DuplicateNode,
-                        format!("{path}.nodes.{prefixed}"),
-                        "duplicate expanded node",
+                        ErrorCategory::MissingArgument,
+                        format!("{path}.nodes.{full_id}.inputs.{input}"),
+                        "recipe input binding is required",
                     ));
                 }
             }
-        } else if nodes.insert(id.clone(), spec).is_some() {
-            return Err(CompileError::new(
-                ErrorCategory::DuplicateNode,
-                format!("{path}.nodes.{id}"),
-                "duplicate node",
-            ));
+            for input in bindings.keys() {
+                if !recipe.inputs.contains_key(input) {
+                    return Err(CompileError::new(
+                        ErrorCategory::UnknownArgument,
+                        format!("{path}.nodes.{full_id}.inputs.{input}"),
+                        "recipe declares no such input",
+                    ));
+                }
+            }
+            for (name, expected) in &recipe.inputs {
+                if let Some(expected_type) = parse_type(expected) {
+                    binding_checks.push((
+                        format!("{path}.nodes.{full_id}.inputs.{name}"),
+                        substitute(&bindings[name], input_bindings, parameter_bindings),
+                        expected_type,
+                    ));
+                }
+            }
+            let mut bound_inputs = input_bindings.clone();
+            for (name, value) in bindings {
+                bound_inputs.insert(
+                    name.clone(),
+                    substitute(value, input_bindings, parameter_bindings),
+                );
+            }
+            let mut bound_params = parameter_bindings.clone();
+            for (name, parameter) in &recipe.parameters {
+                if let Some(value) = spec.params.get(name) {
+                    if let Some(expected_type) = parse_type(&parameter.ty) {
+                        binding_checks.push((
+                            format!("{path}.nodes.{full_id}.params.{name}"),
+                            substitute(value, input_bindings, parameter_bindings),
+                            expected_type,
+                        ));
+                    }
+                    bound_params.insert(
+                        name.clone(),
+                        substitute(value, input_bindings, parameter_bindings),
+                    );
+                } else if let Some(value) = &parameter.default {
+                    bound_params.insert(
+                        name.clone(),
+                        value.as_f64().map(|n| n.to_string()).unwrap_or_default(),
+                    );
+                } else {
+                    return Err(CompileError::new(
+                        ErrorCategory::MissingArgument,
+                        format!("{path}.nodes.{full_id}.params.{name}"),
+                        "recipe parameter requires a binding",
+                    ));
+                }
+            }
+            for name in spec.params.keys() {
+                if !recipe.parameters.contains_key(name) {
+                    return Err(CompileError::new(
+                        ErrorCategory::UnknownArgument,
+                        format!("{path}.nodes.{full_id}.params.{name}"),
+                        "recipe declares no such parameter",
+                    ));
+                }
+            }
+            stack.push(recipe_name.clone());
+            expand_nodes(
+                &recipe.nodes,
+                recipes,
+                path,
+                &full_id,
+                &bound_inputs,
+                &bound_params,
+                stack,
+                output,
+                aliases,
+                binding_checks,
+            )?;
+            stack.pop();
+            for (name, value) in &recipe.outputs {
+                aliases.insert(
+                    format!("{full_id}.{name}"),
+                    qualify_ref(value, &full_id, &bound_inputs, &bound_params),
+                );
+            }
+        } else {
+            if output.contains_key(&full_id) {
+                return Err(CompileError::new(
+                    ErrorCategory::DuplicateNode,
+                    format!("{path}.nodes.{full_id}"),
+                    "duplicate expanded node",
+                ));
+            }
+            let mut expanded = spec.clone();
+            for raw in expanded.args.values_mut() {
+                if let Some(text) = raw.as_str() {
+                    *raw = serde_json::Value::String(qualify_ref(
+                        text,
+                        namespace,
+                        input_bindings,
+                        parameter_bindings,
+                    ));
+                }
+            }
+            expanded.inputs = expanded
+                .inputs
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        qualify_ref(v, namespace, input_bindings, parameter_bindings),
+                    )
+                })
+                .collect();
+            expanded.params = expanded
+                .params
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        qualify_ref(v, namespace, input_bindings, parameter_bindings),
+                    )
+                })
+                .collect();
+            expanded.op = spec.op.clone();
+            output.insert(full_id, expanded);
         }
     }
     Ok(())
 }
 
+fn substitute(
+    raw: &str,
+    inputs: &BTreeMap<String, String>,
+    params: &BTreeMap<String, String>,
+) -> String {
+    if let Some(name) = raw.strip_prefix("$input.") {
+        inputs.get(name).cloned().unwrap_or_else(|| raw.to_owned())
+    } else if let Some(name) = raw.strip_prefix("$param.") {
+        params.get(name).cloned().unwrap_or_else(|| raw.to_owned())
+    } else {
+        raw.to_owned()
+    }
+}
+
+fn qualify_ref(
+    raw: &str,
+    namespace: &str,
+    inputs: &BTreeMap<String, String>,
+    params: &BTreeMap<String, String>,
+) -> String {
+    if let Some(name) = raw.strip_prefix("$input.") {
+        return inputs.get(name).cloned().unwrap_or_else(|| raw.to_owned());
+    }
+    if let Some(name) = raw.strip_prefix("$param.") {
+        return params.get(name).cloned().unwrap_or_else(|| raw.to_owned());
+    }
+    if let Some(reference) = raw.strip_prefix("$node.") {
+        let Some((node, output)) = reference.rsplit_once('.') else {
+            return raw.to_owned();
+        };
+        if namespace.is_empty() {
+            raw.to_owned()
+        } else {
+            format!("$node.{namespace}.{node}.{output}")
+        }
+    } else {
+        raw.to_owned()
+    }
+}
+
+fn config_arguments(op: &str) -> &'static [(&'static str, bool, ValueType)] {
+    match op {
+        "constant" => &[("value", true, ValueType::Scalar)],
+        "noise" => &[("scale", false, ValueType::Scalar)],
+        "voronoi_labels" => &[("count", true, ValueType::Scalar)],
+        "diffuse" => &[
+            ("rate", true, ValueType::Scalar),
+            ("iterations", true, ValueType::Scalar),
+        ],
+        "network_threshold" => &[("threshold", true, ValueType::Scalar)],
+        _ => &[],
+    }
+}
+
+fn config_argument(op: &str, name: &str) -> Option<ValueType> {
+    config_arguments(op)
+        .iter()
+        .find(|(key, _, _)| *key == name)
+        .map(|(_, _, ty)| *ty)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn resolve(
     raw: &str,
     inputs: &BTreeMap<String, String>,
-    parameters: &BTreeMap<String, serde_json::Value>,
+    parameters: &BTreeMap<String, ParameterSpec>,
     nodes: &BTreeMap<String, ValueType>,
     dependencies: &mut BTreeSet<String>,
     path: &str,
+    aliases: &BTreeMap<String, String>,
+    node_outputs: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<ValueRef, CompileError> {
     if let Some(name) = raw.strip_prefix("$input.") {
         return inputs
@@ -418,12 +756,41 @@ fn resolve(
             });
     }
     if let Some(reference) = raw.strip_prefix("$node.") {
-        let (node, output) = reference.split_once('.').unwrap_or((reference, "value"));
+        let (node, output) = reference.rsplit_once('.').ok_or_else(|| {
+            CompileError::new(
+                ErrorCategory::UnknownReference,
+                path,
+                format!("expected $node.<node_id>.<output>, got {raw}"),
+            )
+        })?;
+        if let Some(alias) = aliases.get(&format!("{node}.{output}")) {
+            let target = alias_target(alias, aliases, path)?;
+            return resolve(
+                &target,
+                inputs,
+                parameters,
+                nodes,
+                dependencies,
+                path,
+                aliases,
+                node_outputs,
+            );
+        }
         if !nodes.contains_key(node) {
             return Err(CompileError::new(
                 ErrorCategory::UnknownReference,
                 path,
                 format!("unknown node output {raw}"),
+            ));
+        }
+        if !node_outputs
+            .get(node)
+            .is_some_and(|outputs| outputs.contains(output))
+        {
+            return Err(CompileError::new(
+                ErrorCategory::UnknownReference,
+                path,
+                format!("node {node} has no output {output}"),
             ));
         }
         dependencies.insert(node.to_owned());
@@ -445,17 +812,57 @@ fn resolve(
     ))
 }
 
+fn alias_target<'a>(
+    start: &'a str,
+    aliases: &'a BTreeMap<String, String>,
+    path: &str,
+) -> Result<String, CompileError> {
+    let mut current = start.to_owned();
+    let mut visited = BTreeSet::new();
+    loop {
+        let Some(reference) = current.strip_prefix("$node.") else {
+            return Ok(current);
+        };
+        let Some((node, output)) = reference.rsplit_once('.') else {
+            return Ok(current);
+        };
+        let key = format!("{node}.{output}");
+        let Some(next) = aliases.get(&key) else {
+            return Ok(current);
+        };
+        if !visited.insert(key.clone()) {
+            return Err(CompileError::new(
+                ErrorCategory::DependencyCycle,
+                path,
+                format!("recipe output aliases contain a cycle at {key}"),
+            ));
+        }
+        current = next.clone();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn check_type(
     expected: ValueType,
     value: &ValueRef,
     raw: &str,
     path: &str,
     nodes: &BTreeMap<String, ValueType>,
+    inputs: &BTreeMap<String, String>,
+    parameters: &BTreeMap<String, ParameterSpec>,
+    aliases: &BTreeMap<String, String>,
 ) -> Result<(), CompileError> {
     let actual = match value {
-        ValueRef::NodeOutput { node, .. } => nodes.get(node).copied(),
+        ValueRef::NodeOutput { node, output } => aliases
+            .get(&format!("{node}.{output}"))
+            .and_then(|raw| reference_type(raw, nodes, inputs, parameters, aliases))
+            .or_else(|| nodes.get(node).copied()),
         ValueRef::LiteralScalar(_) => Some(ValueType::Scalar),
-        _ => None,
+        ValueRef::Input(name) => inputs.get(name).and_then(|ty| parse_type(ty)),
+        ValueRef::Parameter(name) => parameters
+            .get(name)
+            .and_then(|parameter| parse_type(&parameter.ty)),
+        ValueRef::State(_) => None,
     };
     if let Some(actual) = actual.filter(|actual| *actual != expected) {
         return Err(CompileError::new(
@@ -464,7 +871,61 @@ fn check_type(
             format!("expected {expected:?}, got {actual:?} from {raw}"),
         ));
     }
+    if actual.is_none() {
+        let declared = match value {
+            ValueRef::Input(name) => inputs.get(name).map(String::as_str),
+            ValueRef::Parameter(name) => {
+                parameters.get(name).map(|parameter| parameter.ty.as_str())
+            }
+            _ => None,
+        };
+        if let Some(declared) = declared {
+            return Err(CompileError::new(
+                ErrorCategory::TypeMismatch,
+                path,
+                format!(
+                    "expected {expected:?}, got unsupported declared type {declared} from {raw}"
+                ),
+            ));
+        }
+    }
     Ok(())
+}
+
+fn parse_type(value: &str) -> Option<ValueType> {
+    match value {
+        "scalar" => Some(ValueType::Scalar),
+        "scalar_field" => Some(ValueType::ScalarField),
+        "vector_field" => Some(ValueType::VectorField),
+        "bool_field" => Some(ValueType::BoolField),
+        "category_field" => Some(ValueType::CategoryField),
+        "index_field" => Some(ValueType::IndexField),
+        "network" => Some(ValueType::Network),
+        _ => None,
+    }
+}
+
+fn reference_type(
+    raw: &str,
+    nodes: &BTreeMap<String, ValueType>,
+    inputs: &BTreeMap<String, String>,
+    parameters: &BTreeMap<String, ParameterSpec>,
+    aliases: &BTreeMap<String, String>,
+) -> Option<ValueType> {
+    if let Some(name) = raw.strip_prefix("$input.") {
+        return inputs.get(name).and_then(|ty| parse_type(ty));
+    }
+    if let Some(name) = raw.strip_prefix("$param.") {
+        return parameters.get(name).and_then(|spec| parse_type(&spec.ty));
+    }
+    if let Some(name) = raw.strip_prefix("$node.") {
+        let (node, output) = name.rsplit_once('.').unwrap_or((name, "value"));
+        if let Some(alias) = aliases.get(&format!("{node}.{output}")) {
+            return reference_type(alias, nodes, inputs, parameters, aliases);
+        }
+        return nodes.get(node).copied();
+    }
+    raw.parse::<f64>().ok().map(|_| ValueType::Scalar)
 }
 
 #[cfg(test)]
@@ -492,6 +953,52 @@ mod tests {
                 Ok(program) => format!("OK\n{program:#?}"),
                 Err(error) => format!("ERROR\n{error}"),
             };
+            let expected_category = match path.file_stem().unwrap().to_str().unwrap() {
+                "error-unknown-op" => Some("UnknownOperator"),
+                "error-unknown-ref" => Some("UnknownReference"),
+                "error-duplicate-node" => Some("DuplicateNode"),
+                "error-missing-arg" | "error-missing-config" => Some("MissingArgument"),
+                "error-unknown-arg" | "error-duplicate-binding" => Some("UnknownArgument"),
+                "error-unknown-parameter" => Some("UnknownParameter"),
+                "error-type-mismatch" | "error-recipe-binding" | "error-expression-binding" => {
+                    Some("TypeMismatch")
+                }
+                "error-recipe-recursion" => Some("RecipeRecursion"),
+                "error-cycle" => Some("DependencyCycle"),
+                "error-invalid-cel" => Some("InvalidCel"),
+                "error-malformed-yaml" => Some("MalformedYaml"),
+                _ => None,
+            };
+            if let Some(category) = expected_category {
+                assert!(
+                    result.contains(category),
+                    "{} did not report {category}: {result}",
+                    path.display()
+                );
+            }
+            if path.file_stem().unwrap() == "valid-recipe-inclusion" {
+                let repeated = compile(&source).unwrap();
+                let first = compile(&source).unwrap();
+                assert_eq!(format!("{first:#?}"), format!("{repeated:#?}"));
+                assert_eq!(first.nodes[0].id, "first.filtered");
+                assert_eq!(first.nodes[1].id, "second.filtered");
+                assert_eq!(
+                    first.nodes[1].args["field"],
+                    ValueRef::NodeOutput {
+                        node: "first.filtered".into(),
+                        output: "value".into()
+                    }
+                );
+            }
+            if path.file_stem().unwrap() == "error-recipe-binding" {
+                let error = compile(&source).unwrap_err();
+                assert_eq!(error.category, ErrorCategory::TypeMismatch);
+                assert!(
+                    error
+                        .to_string()
+                        .contains("programs.generate.nodes.broken.inputs.field")
+                );
+            }
             insta::with_settings!({snapshot_path => "../../../fixtures/specs/snapshots"}, {
                 insta::assert_snapshot!(path.file_stem().unwrap().to_string_lossy().into_owned(), result);
             });

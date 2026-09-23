@@ -3,4 +3,4 @@ source: crates/muse-spec/src/lib.rs
 expression: result
 ---
 ERROR
-DuplicateNode at programs.generate.nodes.duplicate.child: duplicate node
+DuplicateNode at programs.generate.nodes.duplicate.child: duplicate expanded node

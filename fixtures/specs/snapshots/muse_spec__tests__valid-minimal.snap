@@ -8,7 +8,11 @@ Program {
         CompiledNode {
             id: "source",
             op: "constant",
-            args: {},
+            args: {
+                "value": LiteralScalar(
+                    1.0,
+                ),
+            },
             cel: [],
         },
     ],

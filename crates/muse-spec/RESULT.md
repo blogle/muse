@@ -7,17 +7,20 @@
 
 ## Implemented
 
-- YAML deserialization, operator descriptor lookup, reference resolution, port checks, recipe recursion detection, dependency graph cycle checking/topological ordering, CEL source validation, and frozen `Program` construction.
-- Twelve fixture snapshots, including deterministic debug output for successful compilation and error text for rejected fixtures.
+- Recipe `use:` expansion binds declared inputs and parameters, detects recursion, namespaces node IDs, checks declared binding types, and resolves recipe outputs as compile-time aliases.
+- Expression bindings enforce scalar-field inputs for `pointwise`, vector-field inputs for `vector_expr`, scalar-only parameters, and reject colliding input/parameter names.
+- Static scalar configuration schemas enforce accepted keys, scalar types, and required values without altering `PortSpec`.
+- References validate operator output names; `petgraph` provides cycle detection/topological sorting; CEL source is validated and retained in the frozen IR handle.
+- Required invalid-category fixtures and snapshots plus valid minimal, pointwise, and multiple-use recipe fixtures are included. Repeated recipe compilation asserts identical debug output and verifies alias-expanded dependency order.
 
 ## Validation
 
 - `nix develop --command cargo check -p muse-spec` — passed.
-- `nix develop --command cargo nextest run -p muse-spec` — passed (2 tests).
+- `nix develop --command cargo nextest run -p muse-spec` — passed (2 tests; fixture test validates expected categories and repeated recipe IR determinism).
 - `nix develop --command cargo clippy -p muse-spec --all-targets -- -D warnings` — passed.
 - `nix develop --command cargo fmt --all -- --check` — passed.
 - `git diff --check` — passed.
 
 ## Deviations / blockers
 
-The compiler currently handles the Wave 1 linear recipe-node inclusion subset; recipe input/output substitution and complete binding type validation are not implemented. Inputs/parameters are represented as maps of names to declarations, and the frozen IR does not encode program outputs. These are remaining W1-C acceptance gaps.
+No known acceptance gaps remain for the bounded W1-C schema implemented here. Program outputs are validated as compile-time aliases/references and intentionally are not added to the frozen `Program` IR.

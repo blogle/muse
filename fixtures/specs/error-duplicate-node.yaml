@@ -1,7 +1,7 @@
 recipes:
   one:
     nodes:
-      child: {op: constant}
+      child: {op: constant, args: {value: 1.0}}
 programs:
   generate:
     nodes:
