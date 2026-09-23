@@ -1,0 +1,9 @@
+programs:
+  generate:
+    nodes:
+      source: {op: constant, args: {value: 1.0}}
+      bad:
+        op: advect
+        args:
+          field: $node.source.value
+          velocity: $node.source.value

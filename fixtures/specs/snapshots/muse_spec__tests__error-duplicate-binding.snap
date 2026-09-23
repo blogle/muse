@@ -1,0 +1,6 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+ERROR
+UnknownArgument at programs.generate.nodes.calculate.params.amount: binding amount is declared as both input and parameter

@@ -1,0 +1,31 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+OK
+Program {
+    nodes: [
+        CompiledNode {
+            id: "first.filtered",
+            op: "laplacian",
+            args: {
+                "field": Input(
+                    "incoming",
+                ),
+            },
+            cel: [],
+        },
+        CompiledNode {
+            id: "second.filtered",
+            op: "laplacian",
+            args: {
+                "field": NodeOutput {
+                    node: "first.filtered",
+                    output: "value",
+                },
+            },
+            cel: [],
+        },
+    ],
+    updates: [],
+}

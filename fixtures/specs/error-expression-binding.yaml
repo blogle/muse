@@ -1,0 +1,10 @@
+inputs:
+  source: scalar
+programs:
+  generate:
+    nodes:
+      calculate:
+        op: pointwise
+        inputs:
+          source: $input.source
+        expr: source + 1.0

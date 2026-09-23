@@ -1,0 +1,5 @@
+programs:
+  generate:
+    nodes:
+      bad:
+        op: not_an_operator

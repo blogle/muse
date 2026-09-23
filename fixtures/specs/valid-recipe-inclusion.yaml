@@ -1,0 +1,27 @@
+version: 1
+inputs:
+  incoming: scalar_field
+recipes:
+  smoother:
+    inputs:
+      field: scalar_field
+    nodes:
+      filtered:
+        op: laplacian
+        args:
+          field: $input.field
+    outputs:
+      result: $node.filtered.value
+programs:
+  generate:
+    nodes:
+      first:
+        use: smoother
+        inputs:
+          field: $input.incoming
+      second:
+        use: smoother
+        inputs:
+          field: $node.first.result
+    outputs:
+      aliased: $node.second.result

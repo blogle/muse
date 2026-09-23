@@ -1,0 +1,9 @@
+recipes:
+  one:
+    nodes:
+      child: {op: constant, args: {value: 1.0}}
+programs:
+  generate:
+    nodes:
+      duplicate: {use: one}
+      duplicate.child: {op: noise}

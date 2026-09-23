@@ -1,0 +1,4 @@
+programs:
+  generate:
+    nodes:
+      filter: {op: laplacian}

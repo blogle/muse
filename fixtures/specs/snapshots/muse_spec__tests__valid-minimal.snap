@@ -1,0 +1,20 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+OK
+Program {
+    nodes: [
+        CompiledNode {
+            id: "source",
+            op: "constant",
+            args: {
+                "value": LiteralScalar(
+                    1.0,
+                ),
+            },
+            cel: [],
+        },
+    ],
+    updates: [],
+}

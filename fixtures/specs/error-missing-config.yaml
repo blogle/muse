@@ -1,0 +1,5 @@
+programs:
+  generate:
+    nodes:
+      constant:
+        op: constant

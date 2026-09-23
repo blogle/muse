@@ -1,0 +1,18 @@
+recipes:
+  unsupported_schema:
+    inputs:
+      source: temperature_field
+    nodes:
+      passthrough:
+        op: laplacian
+        args:
+          field: $input.source
+    outputs:
+      result: $node.passthrough.value
+programs:
+  generate:
+    nodes:
+      use_schema:
+        op: constant
+        args:
+          value: 1.0

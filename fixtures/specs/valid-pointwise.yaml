@@ -1,0 +1,15 @@
+version: 1
+inputs:
+  source: scalar_field
+parameters:
+  multiplier: {type: scalar, default: 2.0}
+programs:
+  generate:
+    nodes:
+      transform:
+        op: pointwise
+        inputs:
+          x: $input.source
+        params:
+          scale: $param.multiplier
+        expr: x * scale
