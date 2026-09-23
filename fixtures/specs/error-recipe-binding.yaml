@@ -1,0 +1,19 @@
+version: 1
+inputs:
+  incoming: scalar
+recipes:
+  smoother:
+    inputs:
+      field: scalar_field
+    nodes:
+      filtered:
+        op: laplacian
+        args:
+          field: $input.field
+programs:
+  generate:
+    nodes:
+      broken:
+        use: smoother
+        inputs:
+          field: $input.incoming

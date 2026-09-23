@@ -3,4 +3,4 @@ source: crates/muse-spec/src/lib.rs
 expression: result
 ---
 ERROR
-RecipeRecursion at programs.generate.nodes.again.use: recursive recipe inclusion loop
+RecipeRecursion at programs.generate.nodes.entry.again.use: recursive recipe inclusion loop

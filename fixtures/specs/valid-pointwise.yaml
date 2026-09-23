@@ -10,5 +10,6 @@ programs:
         op: pointwise
         inputs:
           x: $input.source
+        params:
           scale: $param.multiplier
         expr: x * scale
