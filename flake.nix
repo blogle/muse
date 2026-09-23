@@ -18,6 +18,11 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           perf = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.perf ];
+          playwrightFontConfig = pkgs.makeFontsConf {
+            fontDirectories = [ pkgs.dejavu_fonts.minimal ];
+            impureFontDirectories = [ pkgs.dejavu_fonts.minimal ];
+            includes = [ ];
+          };
         in {
           # Tooling only: entering this shell never realizes the application.
           default = pkgs.mkShell {
@@ -27,6 +32,7 @@
               pkgs.cargo-nextest
               pkgs.clippy
               pkgs.coz
+              pkgs.fontconfig
               pkgs.git
               pkgs.just
               pkgs.nodejs
@@ -36,6 +42,9 @@
               pkgs.rustc
               pkgs.rustfmt
             ] ++ perf;
+            PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
+            FONTCONFIG_FILE = "${playwrightFontConfig}";
           };
         });
 
