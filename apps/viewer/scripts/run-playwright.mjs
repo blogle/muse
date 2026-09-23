@@ -1,28 +1,15 @@
-import { readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const env = { ...process.env };
-const nixStore = '/nix/store';
 
-if (existsSync(nixStore)) {
-  const entries = readdirSync(nixStore);
-  const browserStore = entries.find((entry) => entry.endsWith('-playwright-browsers'));
-  if (browserStore) {
-    const browserRoot = join(nixStore, browserStore);
-    const shellDir = readdirSync(browserRoot).find((entry) => entry.startsWith('chromium_headless_shell-'));
-    if (shellDir) {
-      env.MUSE_PLAYWRIGHT_CHROMIUM = join(
-        browserRoot,
-        shellDir,
-        'chrome-headless-shell-linux64',
-        'chrome-headless-shell',
-      );
-    }
+for (const variable of ['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH', 'FONTCONFIG_FILE']) {
+  if (!env[variable]) {
+    throw new Error(`${variable} must point to the Nix-provided Playwright browser/font config before running pnpm test`);
   }
-
-  const fontsConfig = entries.find((entry) => entry.endsWith('-fonts.conf'));
-  if (fontsConfig) env.FONTCONFIG_FILE ??= join(nixStore, fontsConfig);
+  if (!existsSync(env[variable])) {
+    throw new Error(`${variable} does not exist: ${env[variable]}`);
+  }
 }
 
 const result = spawnSync('pnpm', ['exec', 'playwright', 'test', ...process.argv.slice(2)], {
