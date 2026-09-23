@@ -1,0 +1,13 @@
+[package]
+name = "muse-spec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+muse-types = { path = "../muse-types" }
+cel.workspace = true
+petgraph.workspace = true
+serde.workspace = true
+serde-saphyr.workspace = true
