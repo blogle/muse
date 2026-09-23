@@ -1,0 +1,6 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+ERROR
+UnknownArgument at programs.generate.nodes.value.args.unexpected: unknown argument for laplacian

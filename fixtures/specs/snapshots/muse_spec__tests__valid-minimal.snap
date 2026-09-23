@@ -1,0 +1,16 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+OK
+Program {
+    nodes: [
+        CompiledNode {
+            id: "source",
+            op: "constant",
+            args: {},
+            cel: [],
+        },
+    ],
+    updates: [],
+}

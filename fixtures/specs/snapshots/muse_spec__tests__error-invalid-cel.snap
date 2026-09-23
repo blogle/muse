@@ -1,0 +1,8 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+ERROR
+InvalidCel at programs.generate.nodes.broken.expr: ERROR: <input>:1:4: Syntax error: mismatched input '<EOF>' expecting {'[', '{', '(', '.', '-', '!', 'true', 'false', 'null', NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES, IDENTIFIER}
+| x +
+| ...^
