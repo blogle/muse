@@ -25,6 +25,8 @@ pub enum ValidationError {
     },
     #[error("metric {name}: {message}")]
     Metric { name: String, message: String },
+    #[error("score calculation: {0}")]
+    Score(String),
 }
 
 #[derive(Clone, Debug)]
@@ -304,6 +306,7 @@ pub fn evaluate(
             }
         }
     }
+    let valid = constraints.values().all(|v| *v);
     let mut objectives = BTreeMap::new();
     let mut weighted = 0.0;
     let mut total_weight = 0.0;
@@ -332,14 +335,42 @@ pub fn evaluate(
             return Err(metric_error(&expr.name, "objective result is nonfinite"));
         }
         objectives.insert(expr.name.clone(), number);
-        weighted += number * objective.weight;
-        total_weight += objective.weight;
+        if !valid {
+            continue;
+        }
+        let term = number * objective.weight;
+        if !term.is_finite() {
+            return Err(ValidationError::Score(format!(
+                "objective '{}' weighted term is nonfinite",
+                expr.name
+            )));
+        }
+        let next_weighted = weighted + term;
+        if !next_weighted.is_finite() {
+            return Err(ValidationError::Score(
+                "weighted objective sum is nonfinite".into(),
+            ));
+        }
+        weighted = next_weighted;
+
+        let next_total_weight = total_weight + objective.weight;
+        if !next_total_weight.is_finite() {
+            return Err(ValidationError::Score(
+                "total objective weight is nonfinite".into(),
+            ));
+        }
+        total_weight = next_total_weight;
     }
-    let valid = constraints.values().all(|v| *v);
     let score = if !valid || total_weight == 0.0 {
         0.0
     } else {
-        weighted / total_weight
+        let score = weighted / total_weight;
+        if !score.is_finite() {
+            return Err(ValidationError::Score(
+                "weighted objective mean is nonfinite".into(),
+            ));
+        }
+        score
     };
     Ok(ValidationResult {
         valid,
@@ -555,6 +586,59 @@ mod tests {
         .unwrap();
         assert_eq!(result.metrics["largest"], 0.0);
     }
+
+    #[test]
+    fn zero_objective_weights_and_invalid_weights_follow_contract() {
+        let no_objectives = run("metrics: {}\n");
+        assert!(no_objectives.valid);
+        assert_eq!(no_objectives.score, 0.0);
+
+        let zero_weights = run(
+            "metrics: {}\nobjectives:\n  first: {expr: '1.0', weight: 0}\n  second: {expr: '2.0', weight: 0}\n",
+        );
+        assert!(zero_weights.valid);
+        assert_eq!(zero_weights.score, 0.0);
+
+        assert!(compile("objectives:\n  negative: {expr: '1.0', weight: -1}\n").is_err());
+        // serde-saphyr/serde_json cannot represent YAML's .inf as a JSON number;
+        // rejection during compilation is the required behavior either way.
+        assert!(compile("objectives:\n  infinite: {expr: '1.0', weight: .inf}\n").is_err());
+    }
+
+    #[test]
+    fn correlation_field_names_obey_yaml_string_resolution() {
+        assert!(compile("metrics:\n  corr: {op: correlation, a: left, b: y}\n").is_err());
+        assert!(compile("metrics:\n  corr: {op: correlation, a: left, b: \"y\"}\n").is_ok());
+        assert!(compile("metrics:\n  corr: {op: correlation, a: left, b: right}\n").is_ok());
+    }
+
+    #[test]
+    fn score_overflow_is_a_structured_error() {
+        let evaluate_spec = |source: &str| evaluate(&compile(source).unwrap(), &world());
+
+        // Each objective result and weight is finite, but their product overflows.
+        assert!(matches!(
+            evaluate_spec("objectives:\n  product: {expr: '1e308', weight: 2.0}\n"),
+            Err(ValidationError::Score(_))
+        ));
+
+        // Products remain finite individually, but their cumulative numerator overflows.
+        assert!(matches!(
+            evaluate_spec(
+                "objectives:\n  first: {expr: '1e308', weight: 1.0}\n  second: {expr: '1e308', weight: 1.0}\n"
+            ),
+            Err(ValidationError::Score(_))
+        ));
+
+        // Both terms remain finite, but the accumulated declared weights overflow.
+        assert!(matches!(
+            evaluate_spec(
+                "objectives:\n  first: {expr: '1e-308', weight: 1e308}\n  second: {expr: '1e-308', weight: 1e308}\n"
+            ),
+            Err(ValidationError::Score(_))
+        ));
+    }
+
     #[test]
     fn errors_are_structured_for_invalid_spec_inputs_and_expression_types() {
         assert!(compile("metrics: [").is_err());
