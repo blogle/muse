@@ -1,0 +1,11 @@
+version: 1
+inputs:
+  scalar: scalar_field
+programs:
+  generate:
+    nodes:
+      bad:
+        op: vector_dot
+        args:
+          a: $input.scalar
+          b: $input.scalar

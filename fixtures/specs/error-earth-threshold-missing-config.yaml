@@ -1,0 +1,10 @@
+version: 1
+inputs:
+  scalar: scalar_field
+programs:
+  generate:
+    nodes:
+      bad:
+        op: threshold
+        args:
+          field: $input.scalar
