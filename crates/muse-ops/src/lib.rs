@@ -314,6 +314,105 @@ pub fn vector_expr(mesh: &Mesh, vectors: &[DVec3]) -> Result<Vec<DVec3>> {
         .collect())
 }
 
+pub fn threshold(mesh: &Mesh, values: &[f64], t: f64) -> Result<Vec<bool>> {
+    if values.len() != mesh.positions.len() {
+        return Err(OperatorError::Invalid("field length mismatch".into()));
+    }
+    Ok(values.par_iter().map(|value| *value >= t).collect())
+}
+
+pub fn vector_dot(mesh: &Mesh, a: &[DVec3], b: &[DVec3]) -> Result<Vec<f64>> {
+    if a.len() != mesh.positions.len() || b.len() != mesh.positions.len() {
+        return Err(OperatorError::Invalid("field length mismatch".into()));
+    }
+    Ok(a.par_iter().zip(b).map(|(a, b)| a.dot(*b)).collect())
+}
+
+pub fn vector_magnitude(mesh: &Mesh, values: &[DVec3]) -> Result<Vec<f64>> {
+    if values.len() != mesh.positions.len() {
+        return Err(OperatorError::Invalid("field length mismatch".into()));
+    }
+    Ok(values.par_iter().map(|value| value.length()).collect())
+}
+
+pub fn voronoi_labels(mesh: &Mesh, seed: u64, node_id: &str, count: usize) -> Result<Vec<u32>> {
+    validate_mesh(mesh)?;
+    let n = mesh.positions.len();
+    if count == 0 || count > n || n > u32::MAX as usize {
+        return Err(OperatorError::Invalid(
+            "voronoi count must be positive and no greater than mesh cell count".into(),
+        ));
+    }
+    let mut ranked: Vec<_> = (0..n)
+        .map(|cell| {
+            let mut hash = blake3::Hasher::new();
+            hash.update(&seed.to_le_bytes());
+            hash.update(&(node_id.len() as u64).to_le_bytes());
+            hash.update(node_id.as_bytes());
+            hash.update(&(cell as u32).to_le_bytes());
+            (*hash.finalize().as_bytes(), cell)
+        })
+        .collect();
+    ranked.sort_unstable_by(|(a, ai), (b, bi)| a.cmp(b).then(ai.cmp(bi)));
+    let seeds: Vec<_> = ranked
+        .into_iter()
+        .take(count)
+        .map(|(_, id)| mesh.positions[id].normalize())
+        .collect();
+    Ok(mesh
+        .positions
+        .par_iter()
+        .map(|position| {
+            let p = position.normalize();
+            seeds
+                .iter()
+                .enumerate()
+                .fold((0usize, f64::NEG_INFINITY), |best, (label, seed)| {
+                    let dot = p.dot(*seed);
+                    if dot > best.1 { (label, dot) } else { best }
+                })
+                .0 as u32
+        })
+        .collect())
+}
+
+pub fn advect(mesh: &Mesh, values: &[f64], velocity: &[DVec3]) -> Result<Vec<f64>> {
+    validate_mesh(mesh)?;
+    let n = mesh.positions.len();
+    if values.len() != n || velocity.len() != n {
+        return Err(OperatorError::Invalid("field length mismatch".into()));
+    }
+    if values.iter().any(|v| !v.is_finite()) || velocity.iter().any(|v| !v.is_finite()) {
+        return Err(OperatorError::Invalid(
+            "advect inputs must be finite".into(),
+        ));
+    }
+    Ok((0..n)
+        .into_par_iter()
+        .map(|i| {
+            let p = mesh.positions[i].normalize();
+            let v = velocity[i];
+            let w = v.length().clamp(0.0, 1.0);
+            if w == 0.0 || mesh.neighbors[i].is_empty() {
+                return values[i];
+            }
+            let upstream = -v.normalize();
+            let source = mesh.neighbors[i]
+                .iter()
+                .filter_map(|&id| {
+                    let j = id as usize;
+                    let delta = mesh.positions[j].normalize() - p;
+                    let tangent = delta - p * delta.dot(p);
+                    let len2 = tangent.length_squared();
+                    (len2 > 1e-24).then_some((id, tangent.dot(upstream) / len2.sqrt()))
+                })
+                .min_by(|(ja, da), (jb, db)| db.total_cmp(da).then_with(|| ja.cmp(jb)))
+                .map_or(i, |(id, _)| id as usize);
+            (1.0 - w) * values[i] + w * values[source]
+        })
+        .collect())
+}
+
 /// Validated CEL program reused to execute the whole dense field.
 pub struct PointwiseProgram(cel::Program);
 
@@ -611,10 +710,33 @@ pub fn execute_with_inputs(
                     }
                 }
             }
+            "threshold" => match field("field")? {
+                Field::Scalar(v) => Value::Field(Field::Bool(threshold(&state.mesh, &v, scalar("threshold")?)?)),
+                _ => return Err(OperatorError::Invalid("field must be scalar".into())),
+            },
+            "vector_dot" => match (field("a")?, field("b")?) {
+                (Field::Vector(a), Field::Vector(b)) => Value::Field(Field::Scalar(vector_dot(&state.mesh, &a, &b)?)),
+                _ => return Err(OperatorError::Invalid("vector_dot requires vector fields".into())),
+            },
+            "vector_magnitude" => match field("field")? {
+                Field::Vector(v) => Value::Field(Field::Scalar(vector_magnitude(&state.mesh, &v)?)),
+                _ => return Err(OperatorError::Invalid("field must be vector".into())),
+            },
+            "voronoi_labels" => {
+                let count = scalar("count")?;
+                if !count.is_finite() || count.fract() != 0.0 || count <= 0.0 || count > usize::MAX as f64 {
+                    return Err(OperatorError::Invalid("voronoi count must be a positive integer".into()));
+                }
+                Value::Field(Field::Category(voronoi_labels(&state.mesh, state.seed, &node.id, count as usize)?))
+            }
+            "advect" => match (field("field")?, field("velocity")?) {
+                (Field::Scalar(v), Field::Vector(velocity)) => Value::Field(Field::Scalar(advect(&state.mesh, &v, &velocity)?)),
+                _ => return Err(OperatorError::Invalid("advect requires scalar field and vector velocity".into())),
+            },
             "reduce" => return Err(OperatorError::UnsupportedConfiguration(
                 "reduce requires a string operation (mean/min/max/sum), but frozen ValueRef represents only scalar literals, fields, parameters, and references; dispatch cannot select an operation".into(),
             )),
-            "voronoi_labels" | "advect" | "network_threshold" => {
+            "network_threshold" => {
                 return Err(OperatorError::NotImplemented(node.op.clone()));
             }
             "pointwise" => {
@@ -748,6 +870,151 @@ mod tests {
             triangles: vec![],
             neighbors: vec![vec![1, 2, 3], vec![0, 2], vec![0, 1, 3], vec![0, 2]],
         }
+    }
+
+    #[test]
+    fn generic_algebra_kernels_and_dispatch_are_validated() {
+        let mesh = sphere_mesh();
+        assert_eq!(
+            threshold(&mesh, &[0.0, 1.0, 2.0, 3.0], 2.0).unwrap(),
+            vec![false, false, true, true]
+        );
+        assert_eq!(
+            vector_dot(
+                &mesh,
+                &[DVec3::X, DVec3::Y, DVec3::Z, DVec3::ONE],
+                &[DVec3::X, DVec3::ONE, DVec3::Z, DVec3::ONE]
+            )
+            .unwrap(),
+            vec![1.0, 1.0, 1.0, 3.0]
+        );
+        assert_eq!(
+            vector_magnitude(&mesh, &[DVec3::X, DVec3::Y, DVec3::Z, DVec3::splat(2.0)]).unwrap(),
+            vec![1.0, 1.0, 1.0, 2.0 * 3.0_f64.sqrt()]
+        );
+        assert!(vector_dot(&mesh, &[], &[DVec3::ZERO; 4]).is_err());
+        assert!(voronoi_labels(&mesh, 1, "v", 0).is_err());
+        assert!(voronoi_labels(&mesh, 1, "v", 5).is_err());
+        let labels = voronoi_labels(&mesh, 1, "v", 3).unwrap();
+        assert_eq!(labels, voronoi_labels(&mesh, 1, "v", 3).unwrap());
+        assert!(labels.iter().all(|label| *label < 3));
+        assert_eq!(
+            labels
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3
+        );
+        let values = [0.0, 1.0, 2.0, 3.0];
+        let zero = [DVec3::ZERO; 4];
+        assert_eq!(advect(&mesh, &values, &zero).unwrap(), values);
+        assert_eq!(
+            advect(&mesh, &[4.0; 4], &[DVec3::X; 4]).unwrap(),
+            vec![4.0; 4]
+        );
+        let synthetic_velocity = [DVec3::Y, DVec3::ZERO, DVec3::ZERO, DVec3::ZERO];
+        assert_eq!(
+            advect(&mesh, &[0.0, 10.0, 20.0, 30.0], &synthetic_velocity).unwrap()[0],
+            20.0
+        );
+        assert!(advect(&mesh, &values, &[DVec3::ZERO; 3]).is_err());
+        assert!(advect(&mesh, &[f64::NAN; 4], &zero).is_err());
+
+        let state = WorldState {
+            mesh: mesh.clone(),
+            fields: BTreeMap::from([
+                ("scalar".into(), Field::Scalar(values.to_vec())),
+                ("va".into(), Field::Vector(vec![DVec3::X; 4])),
+                ("vb".into(), Field::Vector(vec![DVec3::Y; 4])),
+            ]),
+            networks: BTreeMap::new(),
+            parameters: BTreeMap::new(),
+            step: 0,
+            seed: 9,
+        };
+        let node = |id: &str, op: &str, args| CompiledNode {
+            id: id.into(),
+            op: op.into(),
+            args,
+            cel: vec![],
+        };
+        let program = Program {
+            nodes: vec![
+                node(
+                    "vor",
+                    "voronoi_labels",
+                    BTreeMap::from([("count".into(), ValueRef::LiteralScalar(2.0))]),
+                ),
+                node(
+                    "thr",
+                    "threshold",
+                    BTreeMap::from([
+                        ("field".into(), ValueRef::State("scalar".into())),
+                        ("threshold".into(), ValueRef::LiteralScalar(2.0)),
+                    ]),
+                ),
+                node(
+                    "dot",
+                    "vector_dot",
+                    BTreeMap::from([
+                        ("a".into(), ValueRef::State("va".into())),
+                        ("b".into(), ValueRef::State("vb".into())),
+                    ]),
+                ),
+                node(
+                    "mag",
+                    "vector_magnitude",
+                    BTreeMap::from([("field".into(), ValueRef::State("va".into()))]),
+                ),
+                node(
+                    "adv",
+                    "advect",
+                    BTreeMap::from([
+                        ("field".into(), ValueRef::State("scalar".into())),
+                        ("velocity".into(), ValueRef::State("va".into())),
+                    ]),
+                ),
+            ],
+            updates: vec![],
+        };
+        let output = execute(&program, &state).unwrap();
+        assert!(matches!(
+            output.get("vor.value"),
+            Some(Value::Field(Field::Category(_)))
+        ));
+        assert_eq!(
+            output.get("thr.value"),
+            Some(&Value::Field(Field::Bool(vec![false, false, true, true])))
+        );
+        assert_eq!(output.scalar_field("dot.value").unwrap(), &[0.0; 4]);
+        assert_eq!(output.scalar_field("mag.value").unwrap(), &[1.0; 4]);
+        assert!(
+            output
+                .scalar_field("adv.value")
+                .unwrap()
+                .iter()
+                .all(|v| v.is_finite())
+        );
+        assert_eq!(mesh, state.mesh);
+    }
+
+    #[test]
+    fn advect_equal_alignment_chooses_lowest_cell_id() {
+        let mesh = Mesh {
+            positions: vec![
+                DVec3::X,
+                DVec3::new(0.0, 1.0, 1.0).normalize(),
+                DVec3::new(0.0, 1.0, -1.0).normalize(),
+            ],
+            triangles: vec![],
+            neighbors: vec![vec![2, 1], vec![], vec![]],
+        };
+        let values = [0.0, 11.0, 22.0];
+        let velocity = [-DVec3::Y, DVec3::ZERO, DVec3::ZERO];
+
+        // Cells 1 and 2 have exactly equal upstream alignment. Deliberately list
+        // cell 2 first to ensure selection is based on CellId, not neighbor order.
+        assert_eq!(advect(&mesh, &values, &velocity).unwrap()[0], 11.0);
     }
 
     #[test]
@@ -937,6 +1204,12 @@ mod tests {
             .num_threads(4)
             .build()
             .unwrap();
+        let vor_single = single.install(|| voronoi_labels(&mesh, 99, "parallel", 3).unwrap());
+        let vor_multi = multi.install(|| voronoi_labels(&mesh, 99, "parallel", 3).unwrap());
+        let adv_single = single.install(|| advect(&mesh, &values, &[DVec3::Y; 4]).unwrap());
+        let adv_multi = multi.install(|| advect(&mesh, &values, &[DVec3::Y; 4]).unwrap());
+        assert_eq!(vor_single, vor_multi);
+        assert_eq!(adv_single, adv_multi);
         let run = |pool: &rayon::ThreadPool| {
             pool.install(|| {
                 (
