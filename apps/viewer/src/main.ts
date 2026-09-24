@@ -1,16 +1,25 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './style.css';
+import wave2Snapshot from './fixtures/wave2-generic.json';
 
+type Field = {
+  Scalar?: number[];
+  Vector?: number[][];
+  Bool?: boolean[];
+  Category?: number[];
+  Index?: number[];
+};
 type Snapshot = {
   mesh: { positions: number[][]; triangles: number[][] };
-  fields: Record<string, { Scalar?: number[]; Vector?: number[][] }>;
+  fields: Record<string, Field>;
   networks: Record<string, { edges: number[][]; values?: number[] | null }>;
   step: number;
 };
 
 const root = document.querySelector<HTMLDivElement>('#viewer')!;
 const scalarSelect = document.querySelector<HTMLSelectElement>('#scalar-select')!;
+const paletteSelect = document.querySelector<HTMLSelectElement>('#palette-select')!;
 const vectorSelect = document.querySelector<HTMLSelectElement>('#vector-select')!;
 const networkSelect = document.querySelector<HTMLSelectElement>('#network-select')!;
 const stepSelect = document.querySelector<HTMLSelectElement>('#step-select')!;
@@ -42,24 +51,53 @@ function options(select: HTMLSelectElement, values: string[], empty?: string) {
   for (const value of values) select.add(new Option(value, value));
 }
 
+function fieldKind(field: Field | undefined): keyof Field | undefined {
+  if (!field) return undefined;
+  return (['Scalar', 'Bool', 'Category', 'Index', 'Vector'] as const).find((kind) => field[kind] !== undefined);
+}
+
+function colorForCategory(value: number, categories: number[]) {
+  const index = [...new Set(categories)].sort((a, b) => a - b).indexOf(value);
+  return new THREE.Color().setHSL((0.04 + (index * 0.61803398875)) % 1, 0.68, 0.54);
+}
+
+function divergingColor(value: number, limit: number) {
+  const t = Math.max(-1, Math.min(1, value / limit));
+  const color = new THREE.Color();
+  if (t < 0) color.lerpColors(new THREE.Color('#315ea8'), new THREE.Color('#f4f1df'), t + 1);
+  else color.lerpColors(new THREE.Color('#f4f1df'), new THREE.Color('#b83b4b'), t);
+  return color;
+}
+
 function setScalar() {
   const name = scalarSelect.value;
-  const values = snapshot.fields[name]?.Scalar;
+  const field = snapshot.fields[name];
+  const kind = fieldKind(field);
   const geometry = surface.geometry;
   const vertexColors: number[] = [];
-  if (!values) {
+  if (!field || !kind || kind === 'Vector') {
     for (let i = 0; i < snapshot.mesh.positions.length; i++) vertexColors.push(0.24, 0.48, 0.68);
-    range.textContent = 'No scalar field selected';
+    range.textContent = 'No display field selected';
   } else {
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const span = max - min || 1;
-    values.forEach((value) => {
-      const t = (value - min) / span;
-      const color = new THREE.Color().setHSL(0.66 - 0.62 * t, 0.78, 0.48);
+    const values = field[kind]!;
+    const numericValues = kind === 'Bool' ? (values as boolean[]).map((value) => value ? 1 : 0) : values as number[];
+    const min = Math.min(...numericValues);
+    const max = Math.max(...numericValues);
+    const limit = Math.max(Math.abs(min), Math.abs(max), 1);
+    const mode = paletteSelect.value === 'auto'
+      ? kind === 'Bool' ? 'bool' : kind === 'Category' || kind === 'Index' ? 'categorical' : min < 0 && max > 0 ? 'diverging' : 'sequential'
+      : paletteSelect.value;
+    numericValues.forEach((value) => {
+      const color = mode === 'bool'
+        ? value ? new THREE.Color('#f1c75b') : new THREE.Color('#263746')
+        : mode === 'categorical'
+          ? colorForCategory(value, numericValues)
+          : mode === 'diverging'
+            ? divergingColor(value, limit)
+            : new THREE.Color().setHSL(0.66 - 0.62 * ((value - min) / (max - min || 1)), 0.78, 0.48);
       vertexColors.push(color.r, color.g, color.b);
     });
-    range.textContent = `${name}: ${min.toPrecision(4)} — ${max.toPrecision(4)}`;
+    range.textContent = `${name} · ${kind} · ${min.toPrecision(4)} — ${max.toPrecision(4)}`;
   }
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(vertexColors, 3));
   hover.textContent = 'Hover a cell to inspect it';
@@ -129,18 +167,22 @@ function inspect(event: PointerEvent) {
     return;
   }
   const [a, b, c] = snapshot.mesh.triangles[hit.faceIndex];
-  const values = snapshot.fields[scalarSelect.value]?.Scalar;
-  const cellValue = values ? (values[a] + values[b] + values[c]) / 3 : Number.NaN;
-  hover.textContent = `Cell ${hit.faceIndex} · ${scalarSelect.value}: ${Number.isFinite(cellValue) ? cellValue.toPrecision(5) : 'n/a'}`;
+  const field = snapshot.fields[scalarSelect.value];
+  const kind = fieldKind(field);
+  const values = kind && kind !== 'Vector' ? field?.[kind] : undefined;
+  const cellValue = values ? [a, b, c].map((index) => values[index]).join(', ') : 'n/a';
+  hover.textContent = `Cell ${hit.faceIndex} · ${scalarSelect.value}: ${cellValue}`;
 }
 
 async function load() {
-  const paths = [
+  const paths: { path: string; label: string; data?: Snapshot }[] = [
     { path: 'snapshots/canonical-small.json', label: 'Step 0' },
     { path: 'snapshots/canonical-small-step1.json', label: 'Step 1' },
     { path: 'snapshots/wave1-generated.json', label: 'Generated debug' },
+    { path: '', label: 'Wave 2 local fixture', data: wave2Snapshot as Snapshot },
   ];
   const snapshots = await Promise.all(paths.map(async (path) => {
+    if (path.data) return path.data;
     const response = await fetch(`/${path.path}`);
     if (!response.ok) throw new Error(`Unable to load ${path.path}: ${response.status}`);
     return await response.json() as Snapshot;
@@ -155,7 +197,7 @@ async function load() {
     geometry.computeVertexNormals();
     surface = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, side: THREE.DoubleSide }));
     scene.add(surface);
-    options(scalarSelect, Object.keys(snapshot.fields).filter((name) => snapshot.fields[name].Scalar));
+    options(scalarSelect, Object.keys(snapshot.fields).filter((name) => fieldKind(snapshot.fields[name]) !== 'Vector'));
     options(vectorSelect, Object.keys(snapshot.fields).filter((name) => snapshot.fields[name].Vector), 'None');
     options(networkSelect, Object.keys(snapshot.networks), 'None');
     setScalar(); setVectors(); setNetwork();
@@ -163,6 +205,7 @@ async function load() {
   stepSelect.addEventListener('change', chooseSnapshot);
   chooseSnapshot();
   scalarSelect.addEventListener('change', setScalar);
+  paletteSelect.addEventListener('change', setScalar);
   vectorSelect.addEventListener('change', setVectors);
   networkSelect.addEventListener('change', setNetwork);
   document.querySelector('#reset-camera')!.addEventListener('click', resetCamera);

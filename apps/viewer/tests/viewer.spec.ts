@@ -1,13 +1,13 @@
 import { expect, test } from '@playwright/test';
 
-test('loads canonical and generated snapshots with generic field interaction', async ({ page }) => {
+test('loads canonical and Wave-2 snapshots with generic field interaction', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('requestfailed', (request) => errors.push(`${request.url()}: ${request.failure()?.errorText}`));
   page.on('response', (response) => { if (response.status() >= 400) errors.push(`${response.url()}: ${response.status()}`); });
   await page.goto('/');
-  await expect(page.locator('#step-select option')).toHaveCount(3);
+  await expect(page.locator('#step-select option')).toHaveCount(4);
   await expect(page.locator('#viewer canvas')).toBeVisible();
   await expect(page.locator('#scalar-select option')).toHaveText(['elevation', 'precipitation']);
   await page.selectOption('#scalar-select', 'elevation');
@@ -21,10 +21,10 @@ test('loads canonical and generated snapshots with generic field interaction', a
   await page.screenshot({ path: 'test-results/viewer-overlays.png' });
   await page.selectOption('#step-select', '1');
   await expect(page.locator('#step-select')).toHaveValue('1');
-  await page.selectOption('#step-select', '2');
-  await expect(page.locator('#step-select option:checked')).toHaveText('Generated debug');
-  await expect(page.locator('#scalar-select option')).toHaveText(['debug_scalar']);
-  await page.selectOption('#scalar-select', 'debug_scalar');
+  await page.selectOption('#step-select', '3');
+  await expect(page.locator('#step-select option:checked')).toHaveText('Wave 2 local fixture');
+  await expect(page.locator('#scalar-select option')).toHaveText(['signed_signal', 'mask', 'region']);
+  await page.selectOption('#scalar-select', 'signed_signal');
   const rangeText = await page.locator('#range').textContent();
   const rangeValues = rangeText!.match(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi)!.map(Number);
   expect(rangeValues[1]).toBeGreaterThan(rangeValues[0]);
@@ -32,7 +32,13 @@ test('loads canonical and generated snapshots with generic field interaction', a
   const canvas = page.locator('#viewer canvas');
   const bounds = await canvas.boundingBox();
   await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
-  await expect(page.locator('#hover')).toContainText(/Cell \d+ · debug_scalar: -?\d/);
-  await page.screenshot({ path: 'test-results/wave1-generated.png' });
+  await expect(page.locator('#hover')).toContainText(/Cell \d+ · signed_signal:/);
+  await page.selectOption('#scalar-select', 'mask');
+  await expect(page.locator('#range')).toContainText('Bool');
+  await page.selectOption('#scalar-select', 'region');
+  await expect(page.locator('#range')).toContainText('Category');
+  await page.selectOption('#vector-select', 'flow');
+  await page.selectOption('#network-select', 'routes');
+  await page.screenshot({ path: 'test-results/wave2-generic.png' });
   expect(errors).toEqual([]);
 });
