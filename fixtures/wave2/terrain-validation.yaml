@@ -1,0 +1,34 @@
+version: 1
+
+metrics:
+  land_fraction:
+    op: fraction_above
+    field: land_mask
+    threshold: 0.5
+  elevation_variance:
+    op: variance
+    field: elevation
+  boundary_slope_correlation:
+    op: correlation
+    a: plate_boundary
+    b: slope
+  moderate_relief_fraction:
+    op: fraction_above
+    field: slope
+    threshold: 0.75
+
+constraints:
+  enough_land:
+    expr: metrics.land_fraction >= 0.20
+  not_too_much_land:
+    expr: metrics.land_fraction <= 0.45
+  nontrivial_elevation:
+    # Frozen before generation/tuning: variance >= 0.002.
+    expr: metrics.elevation_variance >= 0.002
+  slope_tracks_boundaries:
+    expr: metrics.boundary_slope_correlation > 0.10
+
+objectives:
+  useful_relief_coverage:
+    expr: 1.0 - min(abs(metrics.moderate_relief_fraction - 0.45) / 0.45, 1.0)
+    weight: 1.0
