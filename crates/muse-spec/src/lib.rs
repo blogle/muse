@@ -373,21 +373,29 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Compilation
                 &aliases,
                 &node_outputs,
             )?;
-            let expected = if op == "pointwise" {
-                ValueType::ScalarField
+            let binding_path = format!("{path}.inputs.{argument}");
+            if op == "vector_expr" {
+                check_expression_binding_type(
+                    &value,
+                    text,
+                    &binding_path,
+                    &node_types,
+                    &doc.inputs,
+                    &doc.parameters,
+                    &aliases,
+                )?;
             } else {
-                ValueType::VectorField
-            };
-            check_type(
-                expected,
-                &value,
-                text,
-                &format!("{path}.inputs.{argument}"),
-                &node_types,
-                &doc.inputs,
-                &doc.parameters,
-                &aliases,
-            )?;
+                check_type(
+                    ValueType::ScalarField,
+                    &value,
+                    text,
+                    &binding_path,
+                    &node_types,
+                    &doc.inputs,
+                    &doc.parameters,
+                    &aliases,
+                )?;
+            }
             args.insert(argument.clone(), value);
         }
         for (argument, text) in &spec.params {
@@ -976,6 +984,44 @@ fn check_type(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn check_expression_binding_type(
+    value: &ValueRef,
+    raw: &str,
+    path: &str,
+    nodes: &BTreeMap<String, ValueType>,
+    inputs: &BTreeMap<String, String>,
+    parameters: &BTreeMap<String, ParameterSpec>,
+    aliases: &BTreeMap<String, String>,
+) -> Result<(), CompileError> {
+    let actual = match value {
+        ValueRef::NodeOutput { node, output } => aliases
+            .get(&format!("{node}.{output}"))
+            .and_then(|raw| reference_type(raw, nodes, inputs, parameters, aliases))
+            .or_else(|| nodes.get(node).copied()),
+        ValueRef::Input(name) => inputs.get(name).and_then(|ty| parse_type(ty)),
+        ValueRef::Parameter(name) => parameters
+            .get(name)
+            .and_then(|parameter| parse_type(&parameter.ty)),
+        ValueRef::LiteralScalar(_) => Some(ValueType::Scalar),
+        ValueRef::State(_) => None,
+    };
+    if !matches!(
+        actual,
+        Some(ValueType::ScalarField | ValueType::VectorField)
+    ) {
+        return Err(CompileError::new(
+            ErrorCategory::TypeMismatch,
+            path,
+            format!(
+                "expected ScalarField or VectorField, got {} from {raw}",
+                actual.map_or("unknown".to_owned(), |value| format!("{value:?}"))
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn parse_type(value: &str) -> Option<ValueType> {
     match value {
         "scalar" => Some(ValueType::Scalar),
@@ -1044,6 +1090,21 @@ mod tests {
             assert!(error.to_string().contains(expected_path));
             assert!(error.to_string().contains("temperature_field"));
         }
+    }
+
+    #[test]
+    fn vector_expr_accepts_scalar_field_bindings_and_reports_wrong_types_at_binding() {
+        let source = "inputs:\n  position_x: scalar_field\n  position_y: scalar_field\n  position_z: scalar_field\nprograms:\n  generate:\n    nodes:\n      velocity:\n        op: vector_expr\n        inputs:\n          x: $input.position_x\n          y: $input.position_y\n          z: $input.position_z\n        expr: x\n";
+        assert_eq!(compile(source).unwrap().nodes.len(), 1);
+
+        let wrong_type = source.replace("position_x: scalar_field", "position_x: scalar");
+        let error = compile(&wrong_type).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::TypeMismatch);
+        assert!(
+            error
+                .to_string()
+                .contains("programs.generate.nodes.velocity.inputs.x")
+        );
     }
 
     #[test]
