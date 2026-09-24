@@ -373,16 +373,12 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Compilation
                 &aliases,
                 &node_outputs,
             )?;
-            let expected = if op == "pointwise" {
-                ValueType::ScalarField
-            } else {
-                ValueType::VectorField
-            };
+            let binding_path = format!("{path}.inputs.{argument}");
             check_type(
-                expected,
+                ValueType::ScalarField,
                 &value,
                 text,
-                &format!("{path}.inputs.{argument}"),
+                &binding_path,
                 &node_types,
                 &doc.inputs,
                 &doc.parameters,
@@ -1044,6 +1040,30 @@ mod tests {
             assert!(error.to_string().contains(expected_path));
             assert!(error.to_string().contains("temperature_field"));
         }
+    }
+
+    #[test]
+    fn vector_expr_accepts_scalar_field_bindings_and_reports_wrong_types_at_binding() {
+        let source = "inputs:\n  position_x: scalar_field\n  position_y: scalar_field\n  position_z: scalar_field\nprograms:\n  generate:\n    nodes:\n      velocity:\n        op: vector_expr\n        inputs:\n          x: $input.position_x\n          y: $input.position_y\n          z: $input.position_z\n        expr: x\n";
+        assert_eq!(compile(source).unwrap().nodes.len(), 1);
+
+        let wrong_type = source.replace("position_x: scalar_field", "position_x: scalar");
+        let error = compile(&wrong_type).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::TypeMismatch);
+        assert!(
+            error
+                .to_string()
+                .contains("programs.generate.nodes.velocity.inputs.x")
+        );
+
+        let vector_field = source.replace("position_x: scalar_field", "position_x: vector_field");
+        let error = compile(&vector_field).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::TypeMismatch);
+        assert!(
+            error
+                .to_string()
+                .contains("programs.generate.nodes.velocity.inputs.x")
+        );
     }
 
     #[test]
