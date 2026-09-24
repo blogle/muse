@@ -216,6 +216,16 @@ pub static OPERATOR_DESCRIPTORS: &[OperatorDescriptor] = &[
         outputs: FIELD_OUT,
     },
     OperatorDescriptor {
+        id: "correlated_noise",
+        inputs: NO_PORTS,
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
+        id: "smooth_radius",
+        inputs: FIELD_IN,
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
         id: "voronoi_labels",
         inputs: NO_PORTS,
         outputs: &[PortSpec {
@@ -382,6 +392,8 @@ mod tests {
         let required = [
             "constant",
             "noise",
+            "correlated_noise",
+            "smooth_radius",
             "voronoi_labels",
             "pointwise",
             "vector_expr",

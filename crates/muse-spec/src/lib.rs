@@ -786,6 +786,11 @@ fn config_arguments(op: &str) -> &'static [(&'static str, bool, ValueType)] {
     match op {
         "constant" => &[("value", true, ValueType::Scalar)],
         "noise" => &[("scale", false, ValueType::Scalar)],
+        "correlated_noise" => &[
+            ("radius", true, ValueType::Scalar),
+            ("amplitude", true, ValueType::Scalar),
+        ],
+        "smooth_radius" => &[("radius", true, ValueType::Scalar)],
         "voronoi_labels" => &[("count", true, ValueType::Scalar)],
         "diffuse" => &[
             ("rate", true, ValueType::Scalar),

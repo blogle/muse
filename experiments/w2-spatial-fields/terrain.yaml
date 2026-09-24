@@ -1,0 +1,52 @@
+version: 1
+parameters:
+  plate_count: {type: scalar, default: 12}
+  broad_radius: {type: scalar, default: 0.62}
+  medium_radius: {type: scalar, default: 0.30}
+  local_radius: {type: scalar, default: 0.12}
+  broad_amplitude: {type: scalar, default: 1.0}
+  medium_amplitude: {type: scalar, default: 0.42}
+  local_amplitude: {type: scalar, default: 0.18}
+  boundary_amplitude: {type: scalar, default: 0.8}
+  land_threshold: {type: scalar, default: 0.05}
+programs:
+  generate:
+    nodes:
+      plates:
+        op: voronoi_labels
+        args: {count: $param.plate_count}
+      boundaries:
+        op: boundary_strength
+        args: {labels: $node.plates.value}
+      broad:
+        op: correlated_noise
+        args: {radius: $param.broad_radius, amplitude: $param.broad_amplitude}
+      medium:
+        op: correlated_noise
+        args: {radius: $param.medium_radius, amplitude: $param.medium_amplitude}
+      local:
+        op: correlated_noise
+        args: {radius: $param.local_radius, amplitude: $param.local_amplitude}
+      elevation:
+        op: pointwise
+        inputs:
+          broad: $node.broad.value
+          medium: $node.medium.value
+          local: $node.local.value
+          boundary: $node.boundaries.value
+        params: {boundary_gain: $param.boundary_amplitude}
+        expr: broad + medium + local + boundary * boundary_gain
+      land:
+        op: threshold
+        args: {field: $node.elevation.value, threshold: $param.land_threshold}
+      gradient:
+        op: gradient
+        args: {field: $node.elevation.value}
+      slope:
+        op: vector_magnitude
+        args: {field: $node.gradient.value}
+    updates:
+      elevation: $node.elevation.value
+      land: $node.land.value
+      slope: $node.slope.value
+      plate_boundary: $node.boundaries.value
