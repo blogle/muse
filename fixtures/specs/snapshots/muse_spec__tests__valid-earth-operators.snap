@@ -1,0 +1,46 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+OK
+Program {
+    nodes: [
+        CompiledNode {
+            id: "magnitude",
+            op: "vector_magnitude",
+            args: {
+                "field": Input(
+                    "first",
+                ),
+            },
+            cel: [],
+        },
+        CompiledNode {
+            id: "dot",
+            op: "vector_dot",
+            args: {
+                "a": Input(
+                    "first",
+                ),
+                "b": Input(
+                    "second",
+                ),
+            },
+            cel: [],
+        },
+        CompiledNode {
+            id: "above_cutoff",
+            op: "threshold",
+            args: {
+                "field": Input(
+                    "scalar",
+                ),
+                "threshold": Parameter(
+                    "cutoff",
+                ),
+            },
+            cel: [],
+        },
+    ],
+    updates: [],
+}

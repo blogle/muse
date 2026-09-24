@@ -1,0 +1,33 @@
+version: 1
+inputs:
+  first: vector_field
+  second: vector_field
+  scalar: scalar_field
+parameters:
+  cutoff:
+    type: scalar
+    default: 0.5
+  unused:
+    type: scalar
+    default: 2
+programs:
+  generate:
+    nodes:
+      dot:
+        op: vector_dot
+        args:
+          a: $input.first
+          b: $input.second
+      magnitude:
+        op: vector_magnitude
+        args:
+          field: $input.first
+      above_cutoff:
+        op: threshold
+        args:
+          field: $input.scalar
+          threshold: $param.cutoff
+    outputs:
+      dot: $node.dot.value
+      magnitude: $node.magnitude.value
+      above_cutoff: $node.above_cutoff.value
