@@ -39,6 +39,14 @@ enum MetricDef {
     Correlation(String, String),
     ComponentCount(String),
     LargestComponentFraction(String),
+    Area(String),
+    AreaFraction(String),
+    Perimeter(String),
+    LargestComponentAreaFraction(String),
+    LargestComponentPerimeter(String),
+    ComponentAreaMean(String),
+    ComponentAreaVariance(String),
+    PerimeterAreaRatio(String),
 }
 
 #[derive(Debug)]
@@ -230,6 +238,14 @@ fn parse_metric(name: &str, raw: serde_json::Value) -> Result<MetricDef, Validat
         }
         "component_count" => Ok(MetricDef::ComponentCount(field()?)),
         "largest_component_fraction" => Ok(MetricDef::LargestComponentFraction(field()?)),
+        "area" => Ok(MetricDef::Area(field()?)),
+        "area_fraction" => Ok(MetricDef::AreaFraction(field()?)),
+        "perimeter" => Ok(MetricDef::Perimeter(field()?)),
+        "largest_component_area_fraction" => Ok(MetricDef::LargestComponentAreaFraction(field()?)),
+        "largest_component_perimeter" => Ok(MetricDef::LargestComponentPerimeter(field()?)),
+        "component_area_mean" => Ok(MetricDef::ComponentAreaMean(field()?)),
+        "component_area_variance" => Ok(MetricDef::ComponentAreaVariance(field()?)),
+        "perimeter_area_ratio" => Ok(MetricDef::PerimeterAreaRatio(field()?)),
         _ => Err(ValidationError::Spec {
             path,
             message: format!("unsupported metric op '{op}'"),
@@ -273,6 +289,28 @@ pub fn evaluate(
                         .max()
                         .unwrap_or(0) as f64
                         / total as f64
+                }
+            }
+            MetricDef::Area(f)
+            | MetricDef::AreaFraction(f)
+            | MetricDef::Perimeter(f)
+            | MetricDef::LargestComponentAreaFraction(f)
+            | MetricDef::LargestComponentPerimeter(f)
+            | MetricDef::ComponentAreaMean(f)
+            | MetricDef::ComponentAreaVariance(f)
+            | MetricDef::PerimeterAreaRatio(f) => {
+                let mask = bools(world, f, name)?;
+                let stats = spherical_stats(world, mask, name)?;
+                match def {
+                    MetricDef::Area(_) => stats.area,
+                    MetricDef::AreaFraction(_) => stats.area_fraction,
+                    MetricDef::Perimeter(_) => stats.perimeter,
+                    MetricDef::LargestComponentAreaFraction(_) => stats.largest_area_fraction,
+                    MetricDef::LargestComponentPerimeter(_) => stats.largest_perimeter,
+                    MetricDef::ComponentAreaMean(_) => stats.component_area_mean,
+                    MetricDef::ComponentAreaVariance(_) => stats.component_area_variance,
+                    MetricDef::PerimeterAreaRatio(_) => stats.perimeter_area_ratio,
+                    _ => unreachable!(),
                 }
             }
         };
@@ -516,6 +554,146 @@ fn component_sizes(world: &WorldState, mask: &[bool]) -> Vec<usize> {
     sizes
 }
 
+#[derive(Default)]
+struct SphericalStats {
+    area: f64,
+    area_fraction: f64,
+    perimeter: f64,
+    largest_area_fraction: f64,
+    largest_perimeter: f64,
+    component_area_mean: f64,
+    component_area_variance: f64,
+    perimeter_area_ratio: f64,
+}
+
+fn spherical_stats(
+    world: &WorldState,
+    mask: &[bool],
+    metric: &str,
+) -> Result<SphericalStats, ValidationError> {
+    let n = mask.len();
+    if world.mesh.neighbors.len() != n {
+        return Err(metric_error(
+            metric,
+            "mesh neighbor count does not match positions",
+        ));
+    }
+    let mut vertex_area = vec![0.0; n];
+    for triangle in &world.mesh.triangles {
+        let [ai, bi, ci] = *triangle;
+        let (a, b, c) = (ai as usize, bi as usize, ci as usize);
+        if a >= n || b >= n || c >= n {
+            return Err(metric_error(metric, "mesh triangle index is out of range"));
+        }
+        let (a, b, c) = (
+            world.mesh.positions[a].normalize(),
+            world.mesh.positions[b].normalize(),
+            world.mesh.positions[c].normalize(),
+        );
+        let numerator = a.dot(b.cross(c)).abs();
+        let denominator = 1.0 + a.dot(b) + b.dot(c) + c.dot(a);
+        let share = 2.0 * numerator.atan2(denominator) / 3.0;
+        for index in [ai, bi, ci] {
+            vertex_area[index as usize] += share;
+        }
+    }
+    let mut component_id = vec![usize::MAX; n];
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    for start in 0..n {
+        if !mask[start] || component_id[start] != usize::MAX {
+            continue;
+        }
+        let id = components.len();
+        component_id[start] = id;
+        let mut members = Vec::new();
+        let mut queue = VecDeque::from([start]);
+        while let Some(i) = queue.pop_front() {
+            members.push(i);
+            for &neighbor in &world.mesh.neighbors[i] {
+                let j = neighbor as usize;
+                if j < n && mask[j] && component_id[j] == usize::MAX {
+                    component_id[j] = id;
+                    queue.push_back(j);
+                }
+            }
+        }
+        components.push(members);
+    }
+    let component_areas: Vec<f64> = components
+        .iter()
+        .map(|vertices| vertices.iter().map(|&i| vertex_area[i]).sum())
+        .collect();
+    let area: f64 = if mask.iter().any(|value| *value) {
+        mask.iter()
+            .enumerate()
+            .filter(|(_, value)| **value)
+            .map(|(i, _)| vertex_area[i])
+            .sum()
+    } else {
+        0.0
+    };
+    let mut component_perimeters = vec![0.0; components.len()];
+    for (i, adjacent) in world.mesh.neighbors.iter().enumerate() {
+        if !mask[i] {
+            continue;
+        }
+        for &neighbor in adjacent {
+            let j = neighbor as usize;
+            if j >= n || i >= j || mask[j] {
+                continue;
+            }
+            let p = world.mesh.positions[i].normalize();
+            let q = world.mesh.positions[j].normalize();
+            component_perimeters[component_id[i]] += p.dot(q).clamp(-1.0, 1.0).acos();
+        }
+    }
+    let perimeter: f64 = if component_perimeters.is_empty() {
+        0.0
+    } else {
+        component_perimeters.iter().sum()
+    };
+    let largest_area = component_areas.iter().copied().fold(0.0, f64::max);
+    let largest_index = component_areas
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(i, _)| i);
+    let component_area_mean = if component_areas.is_empty() {
+        0.0
+    } else {
+        component_areas.iter().sum::<f64>() / component_areas.len() as f64
+    };
+    let component_area_variance = if component_areas.is_empty() {
+        0.0
+    } else {
+        component_areas
+            .iter()
+            .map(|v| (v - component_area_mean).powi(2))
+            .sum::<f64>()
+            / component_areas.len() as f64
+    };
+    Ok(SphericalStats {
+        area,
+        area_fraction: area / (4.0 * std::f64::consts::PI),
+        perimeter,
+        largest_area_fraction: if area == 0.0 {
+            0.0
+        } else {
+            largest_area / area
+        },
+        largest_perimeter: largest_index
+            .map(|i| component_perimeters[i])
+            .unwrap_or(0.0),
+        component_area_mean,
+        component_area_variance,
+        perimeter_area_ratio: if area == 0.0 {
+            0.0
+        } else {
+            perimeter / area.sqrt()
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,6 +763,111 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.metrics["largest"], 0.0);
+    }
+
+    fn spherical_metrics(mesh: muse_types::Mesh, mask: Vec<bool>) -> BTreeMap<String, f64> {
+        let world = WorldState {
+            mesh,
+            fields: BTreeMap::from([("mask".into(), Field::Bool(mask))]),
+            ..world()
+        };
+        let source = "metrics:\n  area: {op: area, field: mask}\n  area_fraction: {op: area_fraction, field: mask}\n  perimeter: {op: perimeter, field: mask}\n  largest_area: {op: largest_component_area_fraction, field: mask}\n  largest_perimeter: {op: largest_component_perimeter, field: mask}\n  mean: {op: component_area_mean, field: mask}\n  variance: {op: component_area_variance, field: mask}\n  ratio: {op: perimeter_area_ratio, field: mask}\n";
+        evaluate(&compile(source).unwrap(), &world).unwrap().metrics
+    }
+
+    #[test]
+    fn canonical_mesh_area_covers_sphere_and_masks_have_stable_metrics() {
+        for level in [0, 2] {
+            let mesh = muse_geom::icosphere(level).unwrap();
+            let full = spherical_metrics(mesh.clone(), vec![true; mesh.positions.len()]);
+            assert!((full["area"] - 4.0 * std::f64::consts::PI).abs() < 1e-10);
+            assert!((full["area_fraction"] - 1.0).abs() < 1e-12);
+            assert_eq!(full["perimeter"], 0.0);
+            let empty = spherical_metrics(mesh.clone(), vec![false; mesh.positions.len()]);
+            assert!(empty.values().all(|value| *value == 0.0));
+            assert_eq!(
+                spherical_metrics(mesh.clone(), vec![false; mesh.positions.len()]),
+                empty
+            );
+            insta::assert_snapshot!(format!("level_{level}: {full:?}\nempty: {empty:?}"));
+        }
+    }
+
+    #[test]
+    fn coherent_mask_outperforms_fragmented_mask_and_edges_are_counted_once() {
+        let mesh = muse_geom::icosphere(2).unwrap();
+        let mut order = Vec::new();
+        let mut seen = vec![false; mesh.positions.len()];
+        let mut queue = VecDeque::from([0]);
+        seen[0] = true;
+        while let Some(i) = queue.pop_front() {
+            order.push(i);
+            for &neighbor in &mesh.neighbors[i] {
+                let j = neighbor as usize;
+                if !seen[j] {
+                    seen[j] = true;
+                    queue.push_back(j);
+                }
+            }
+        }
+        let mut coherent = vec![false; seen.len()];
+        let mut fragmented = vec![false; seen.len()];
+        for &i in order.iter().take(40) {
+            coherent[i] = true;
+        }
+        for &i in order.iter().step_by(4).take(40) {
+            fragmented[i] = true;
+        }
+        let a = spherical_metrics(mesh.clone(), coherent);
+        let b = spherical_metrics(mesh.clone(), fragmented);
+        assert!(a["ratio"] < b["ratio"]);
+        assert!(a["largest_area"] > b["largest_area"]);
+
+        let mut one_sided = mesh.clone();
+        for adjacent in &mut one_sided.neighbors {
+            adjacent.clear();
+        }
+        for i in 0..one_sided.positions.len() {
+            for &j in &mesh.neighbors[i] {
+                if (i as u32) < j {
+                    one_sided.neighbors[i].push(j);
+                }
+            }
+        }
+        let mask: Vec<bool> = vec![true; mesh.positions.len() / 2]
+            .into_iter()
+            .chain(std::iter::repeat(false))
+            .take(mesh.positions.len())
+            .collect();
+        assert!(
+            (spherical_metrics(mesh.clone(), mask.clone())["perimeter"]
+                - spherical_metrics(one_sided, mask)["perimeter"])
+                .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn spherical_metrics_report_missing_and_wrong_type_fields() {
+        let mesh = muse_geom::icosphere(0).unwrap();
+        for field_value in [None, Some(Field::Scalar(vec![1.0; mesh.positions.len()]))] {
+            let mut fields = BTreeMap::new();
+            if let Some(value) = field_value {
+                fields.insert("mask".into(), value);
+            }
+            let state = WorldState {
+                mesh: mesh.clone(),
+                fields,
+                ..world()
+            };
+            assert!(matches!(
+                evaluate(
+                    &compile("metrics:\n  a: {op: area, field: mask}\n").unwrap(),
+                    &state
+                ),
+                Err(ValidationError::Metric { .. })
+            ));
+        }
     }
 
     #[test]

@@ -1,0 +1,6 @@
+---
+source: crates/muse-validate/src/lib.rs
+expression: "format!(\"level_{level}: {full:?}\\nempty: {empty:?}\")"
+---
+level_0: {"area": 12.566370614359176, "area_fraction": 1.0000000000000002, "largest_area": 1.0, "largest_perimeter": 0.0, "mean": 12.566370614359176, "perimeter": 0.0, "ratio": 0.0, "variance": 0.0}
+empty: {"area": 0.0, "area_fraction": 0.0, "largest_area": 0.0, "largest_perimeter": 0.0, "mean": 0.0, "perimeter": 0.0, "ratio": 0.0, "variance": 0.0}
