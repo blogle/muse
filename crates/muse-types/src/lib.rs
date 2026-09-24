@@ -154,6 +154,19 @@ const CATEGORY_IN: &[PortSpec] = &[PortSpec {
     ty: ValueType::CategoryField,
     required: true,
 }];
+const REGION_SCALAR_IN: &[PortSpec] = CATEGORY_IN;
+const BOUNDARY_SIGNED_IN: &[PortSpec] = &[
+    PortSpec {
+        name: "labels",
+        ty: ValueType::CategoryField,
+        required: true,
+    },
+    PortSpec {
+        name: "values",
+        ty: ValueType::ScalarField,
+        required: true,
+    },
+];
 const INDEX_OUT: &[PortSpec] = &[PortSpec {
     name: "value",
     ty: ValueType::IndexField,
@@ -272,6 +285,16 @@ pub static OPERATOR_DESCRIPTORS: &[OperatorDescriptor] = &[
     OperatorDescriptor {
         id: "boundary_strength",
         inputs: CATEGORY_IN,
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
+        id: "region_scalar",
+        inputs: REGION_SCALAR_IN,
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
+        id: "boundary_signed_difference",
+        inputs: BOUNDARY_SIGNED_IN,
         outputs: FIELD_OUT,
     },
     OperatorDescriptor {
@@ -403,6 +426,8 @@ mod tests {
             "diffuse",
             "advect",
             "boundary_strength",
+            "region_scalar",
+            "boundary_signed_difference",
             "distance_to_mask",
             "flow_direction",
             "accumulate",
