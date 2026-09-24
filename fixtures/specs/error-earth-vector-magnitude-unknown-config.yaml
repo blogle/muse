@@ -1,0 +1,11 @@
+version: 1
+inputs:
+  vector: vector_field
+programs:
+  generate:
+    nodes:
+      bad:
+        op: vector_magnitude
+        args:
+          field: $input.vector
+          unexpected: 1.0
