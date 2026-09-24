@@ -17,6 +17,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 divan.workspace = true
+muse-geom = { path = "../muse-geom" }
 
 [[bench]]
 name = "operators"
