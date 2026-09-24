@@ -666,6 +666,98 @@ pub fn boundary_strength(mesh: &Mesh, labels: &[u32]) -> Result<Vec<f64>> {
         .collect())
 }
 
+/// Assign one deterministic scalar to every category, keyed by seed, node ID, and label.
+pub fn region_scalar(
+    labels: &[u32],
+    seed: u64,
+    node_id: &str,
+    scale: f64,
+    offset: f64,
+) -> Result<Vec<f64>> {
+    if !scale.is_finite() || !offset.is_finite() {
+        return Err(OperatorError::Invalid(
+            "region_scalar scale and offset must be finite".into(),
+        ));
+    }
+    let mut cache = BTreeMap::new();
+    for &label in labels {
+        cache.entry(label).or_insert_with(|| {
+            let mut hash = blake3::Hasher::new();
+            hash.update(&seed.to_le_bytes());
+            hash.update(&(node_id.len() as u64).to_le_bytes());
+            hash.update(node_id.as_bytes());
+            hash.update(&label.to_le_bytes());
+            let bits = u64::from_le_bytes(hash.finalize().as_bytes()[..8].try_into().unwrap());
+            let unit = (bits >> 11) as f64 / ((1u64 << 53) as f64);
+            offset + scale * (2.0 * unit - 1.0)
+        });
+    }
+    let output: Vec<_> = labels.iter().map(|label| cache[label]).collect();
+    if output.iter().any(|value| !value.is_finite()) {
+        return Err(OperatorError::Invalid(
+            "region_scalar result is not finite".into(),
+        ));
+    }
+    Ok(output)
+}
+
+/// Aggregate incident signed value differences over unique cross-category geodesic edges.
+pub fn boundary_signed_difference(
+    mesh: &Mesh,
+    labels: &[u32],
+    values: &[f64],
+    scale: f64,
+) -> Result<Vec<f64>> {
+    validate_component_mesh(mesh)?;
+    let n = mesh.positions.len();
+    if labels.len() != n || values.len() != n {
+        return Err(OperatorError::Invalid("field length mismatch".into()));
+    }
+    if !scale.is_finite() || values.iter().any(|v| !v.is_finite()) {
+        return Err(OperatorError::Invalid(
+            "boundary inputs must be finite".into(),
+        ));
+    }
+    let mut sums = vec![0.0; n];
+    let mut weights = vec![0.0; n];
+    for i in 0..n {
+        for &neighbor in &mesh.neighbors[i] {
+            let j = neighbor as usize;
+            if i >= j || labels[i] == labels[j] {
+                continue;
+            }
+            let pi = mesh.positions[i];
+            let pj = mesh.positions[j];
+            if !pi.is_finite()
+                || !pj.is_finite()
+                || pi.length_squared() == 0.0
+                || pj.length_squared() == 0.0
+            {
+                return Err(OperatorError::Invalid(
+                    "boundary edge has invalid geometry".into(),
+                ));
+            }
+            let length = pi.normalize().dot(pj.normalize()).clamp(-1.0, 1.0).acos();
+            let difference = (values[j] - values[i]) * scale;
+            sums[i] += difference * length;
+            sums[j] -= difference * length;
+            weights[i] += length;
+            weights[j] += length;
+        }
+    }
+    let output: Vec<_> = sums
+        .iter()
+        .zip(weights)
+        .map(|(sum, weight)| if weight == 0.0 { 0.0 } else { sum / weight })
+        .collect();
+    if output.iter().any(|value| !value.is_finite()) {
+        return Err(OperatorError::Invalid(
+            "boundary result is not finite".into(),
+        ));
+    }
+    Ok(output)
+}
+
 pub fn distance_to_mask(mesh: &Mesh, mask: &[bool]) -> Result<Vec<f64>> {
     validate_mesh(mesh)?;
     if mask.len() != mesh.positions.len() {
@@ -1169,6 +1261,45 @@ pub fn execute_with_inputs(
                     ));
                 }
             },
+            "region_scalar" => match field("labels")? {
+                Field::Category(labels) => {
+                    let scale = if node.args.contains_key("scale") {
+                        scalar("scale")?
+                    } else {
+                        1.0
+                    };
+                    let offset = if node.args.contains_key("offset") {
+                        scalar("offset")?
+                    } else {
+                        0.0
+                    };
+                    Value::Field(Field::Scalar(region_scalar(
+                        &labels, state.seed, &node.id, scale, offset,
+                    )?))
+                }
+                _ => return Err(OperatorError::Invalid("labels must be category field".into())),
+            },
+            "boundary_signed_difference" => match (field("labels")?, field("values")?) {
+                (Field::Category(labels), Field::Scalar(values)) => {
+                    let scale = if node.args.contains_key("scale") {
+                        scalar("scale")?
+                    } else {
+                        1.0
+                    };
+                    Value::Field(Field::Scalar(boundary_signed_difference(
+                        &state.mesh,
+                        &labels,
+                        &values,
+                        scale,
+                    )?))
+                }
+                _ => {
+                    return Err(OperatorError::Invalid(
+                        "boundary_signed_difference requires category labels and scalar values"
+                            .into(),
+                    ));
+                }
+            },
             "distance_to_mask" => match field("mask")? {
                 Field::Bool(v) => Value::Field(Field::Scalar(distance_to_mask(&state.mesh, &v)?)),
                 _ => return Err(OperatorError::Invalid("mask must be boolean field".into())),
@@ -1291,6 +1422,87 @@ mod tests {
         assert!(connected_components(&mesh, &mask).is_err());
         mesh.neighbors[0] = vec![99];
         assert!(connected_components(&mesh, &mask).is_err());
+    }
+
+    #[test]
+    fn region_scalar_is_category_keyed_and_composes_with_components() {
+        let labels = connected_components(&line_mesh(5), &[true, true, false, true, true]).unwrap();
+        let first = region_scalar(&labels, 4, "region", 2.0, 1.0).unwrap();
+        assert_eq!(first[0], first[1]);
+        assert_eq!(first[3], first[4]);
+        assert_ne!(first[0], first[3]);
+        assert_eq!(
+            first,
+            region_scalar(&labels, 4, "region", 2.0, 1.0).unwrap()
+        );
+        assert_ne!(
+            first,
+            region_scalar(&labels, 5, "region", 2.0, 1.0).unwrap()
+        );
+        assert_ne!(first, region_scalar(&labels, 4, "other", 2.0, 1.0).unwrap());
+        let unrelated = region_scalar(&[20, 20, 99, 99], 4, "region", 2.0, 1.0).unwrap();
+        assert_eq!(unrelated[0], unrelated[1]);
+        assert_eq!(unrelated[2], unrelated[3]);
+        assert_ne!(
+            region_scalar(&[2, 2], 4, "region", 1.0, 0.0).unwrap()[0],
+            region_scalar(&[200, 200], 4, "region", 1.0, 0.0).unwrap()[0]
+        );
+        assert!(region_scalar(&labels, 4, "region", f64::NAN, 0.0).is_err());
+    }
+
+    #[test]
+    fn signed_boundary_difference_is_weighted_normalized_and_order_independent() {
+        let mesh = Mesh {
+            positions: vec![DVec3::X, DVec3::Y, DVec3::Z],
+            triangles: vec![],
+            neighbors: vec![vec![2, 1], vec![0, 2], vec![0, 1]],
+        };
+        let labels = [1, 2, 2];
+        let values = [0.0, 2.0, 2.0];
+        let out = boundary_signed_difference(&mesh, &labels, &values, 1.0).unwrap();
+        assert_eq!(out[0], 2.0);
+        assert_eq!(out[1], -2.0);
+        assert_eq!(out[2], -2.0);
+        assert_eq!(
+            boundary_signed_difference(&mesh, &labels, &[3.0; 3], 1.0).unwrap(),
+            vec![0.0; 3]
+        );
+        assert_eq!(
+            boundary_signed_difference(&mesh, &[1; 3], &values, 1.0).unwrap(),
+            vec![0.0; 3]
+        );
+        assert_eq!(
+            boundary_signed_difference(&mesh, &labels, &values, -1.0).unwrap(),
+            vec![-2.0, 2.0, 2.0]
+        );
+        let mut reversed = mesh.clone();
+        for neighbors in &mut reversed.neighbors {
+            neighbors.reverse();
+        }
+        assert_eq!(
+            out,
+            boundary_signed_difference(&reversed, &labels, &values, 1.0).unwrap()
+        );
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        assert_eq!(
+            out,
+            pool.install(|| boundary_signed_difference(&mesh, &labels, &values, 1.0))
+                .unwrap()
+        );
+        let weighted = Mesh {
+            positions: vec![DVec3::X, DVec3::Y, (DVec3::X + DVec3::Y).normalize()],
+            triangles: vec![],
+            neighbors: vec![vec![1, 2], vec![0], vec![0]],
+        };
+        let aggregate =
+            boundary_signed_difference(&weighted, &[1, 2, 2], &[0.0, 2.0, 4.0], 1.0).unwrap();
+        assert!((aggregate[0] - 8.0 / 3.0).abs() < 1e-12);
+        let mut malformed = mesh;
+        malformed.neighbors[0].pop();
+        assert!(boundary_signed_difference(&malformed, &labels, &values, 1.0).is_err());
     }
 
     #[test]
