@@ -10,7 +10,14 @@
       <section class="toolbar" aria-label="Snapshot controls">
         <h1>MUSE <span>Snapshot Viewer</span></h1>
         <label>Snapshot<select id="step-select" aria-label="Snapshot"></select></label>
-        <label>Scalar field<select id="scalar-select" aria-label="Scalar field"></select></label>
+        <label>Display field<select id="scalar-select" aria-label="Display field"></select></label>
+        <label>Palette<select id="palette-select" aria-label="Palette">
+          <option value="auto">Auto</option>
+          <option value="sequential">Sequential</option>
+          <option value="diverging">Diverging</option>
+          <option value="categorical">Categorical</option>
+          <option value="bool">Bool mask</option>
+        </select></label>
         <label>Vector field<select id="vector-select" aria-label="Vector field"></select></label>
         <label>Network<select id="network-select" aria-label="Network"></select></label>
         <button id="reset-camera" type="button">Reset camera</button>
