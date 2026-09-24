@@ -1,6 +1,9 @@
 use divan::Bencher;
 use glam::DVec3;
-use muse_ops::{PointwiseProgram, accumulate, diffuse, gradient, noise as eval_noise};
+use muse_geom::icosphere;
+use muse_ops::{
+    PointwiseProgram, accumulate, advect, diffuse, gradient, noise as eval_noise, voronoi_labels,
+};
 use muse_types::Mesh;
 use std::collections::BTreeMap;
 
@@ -57,6 +60,28 @@ fn accumulate_10k(bencher: Bencher) {
         .collect::<Vec<_>>();
     let values = vec![1.0; 10_000];
     bencher.bench_local(|| accumulate(&receivers, &values));
+}
+
+#[divan::bench]
+fn voronoi_labels_level_5(bencher: Bencher) {
+    let mesh = icosphere(5).unwrap();
+    assert_eq!(mesh.positions.len(), 10_242);
+    bencher.bench_local(|| voronoi_labels(&mesh, 9, "bench-voronoi", 12));
+}
+
+#[divan::bench]
+fn advect_level_5(bencher: Bencher) {
+    let mesh = icosphere(5).unwrap();
+    assert_eq!(mesh.positions.len(), 10_242);
+    let field: Vec<_> = (0..mesh.positions.len())
+        .map(|i| (i as f64 * 0.001).sin())
+        .collect();
+    let velocity: Vec<_> = mesh
+        .positions
+        .iter()
+        .map(|position| muse_geom::project_tangent(*position, DVec3::new(0.2, 0.3, 0.4)))
+        .collect();
+    bencher.bench_local(|| advect(&mesh, &field, &velocity));
 }
 
 fn main() {

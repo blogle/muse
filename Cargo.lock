@@ -777,6 +777,7 @@ dependencies = [
  "divan",
  "fastnoise-lite",
  "glam",
+ "muse-geom",
  "muse-types",
  "rand_chacha 0.10.0",
  "rayon",
