@@ -31,6 +31,144 @@ pub enum OperatorError {
 pub type Result<T> = std::result::Result<T, OperatorError>;
 type CelBindings = (BTreeMap<String, Vec<f64>>, BTreeMap<String, f64>);
 
+/// A discrete component's size and unit-sphere geometry.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ComponentSummary {
+    pub cell_count: usize,
+    pub area: f64,
+    pub perimeter: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComponentMeasure {
+    Area,
+    Perimeter,
+    CellCount,
+}
+
+/// Label true cells by connected component, ordered by each component's minimum cell ID.
+pub fn connected_components(mesh: &Mesh, mask: &[bool]) -> Result<Vec<u32>> {
+    validate_component_mesh(mesh)?;
+    let n = mesh.positions.len();
+    if mask.len() != n || n > u32::MAX as usize {
+        return Err(OperatorError::Invalid(
+            "mask length mismatch or mesh too large".into(),
+        ));
+    }
+    let mut labels = vec![0; n];
+    let mut next_id = 1u32;
+    let mut queue = std::collections::VecDeque::new();
+    for start in 0..n {
+        if !mask[start] || labels[start] != 0 {
+            continue;
+        }
+        labels[start] = next_id;
+        queue.push_back(start);
+        while let Some(i) = queue.pop_front() {
+            for &neighbor in &mesh.neighbors[i] {
+                let j = neighbor as usize;
+                if mask[j] && labels[j] == 0 {
+                    labels[j] = next_id;
+                    queue.push_back(j);
+                }
+            }
+        }
+        next_id += 1;
+    }
+    Ok(labels)
+}
+
+/// Summarize positive category labels using spherical triangle vertex shares and
+/// unique undirected geodesic edges. Index zero in the result is background.
+pub fn component_summaries(mesh: &Mesh, labels: &[u32]) -> Result<Vec<ComponentSummary>> {
+    validate_component_mesh(mesh)?;
+    let n = mesh.positions.len();
+    if labels.len() != n {
+        return Err(OperatorError::Invalid("label length mismatch".into()));
+    }
+    let max_label = labels.iter().copied().max().unwrap_or(0) as usize;
+    let unique_labels: std::collections::BTreeSet<_> = labels.iter().copied().collect();
+    if unique_labels.iter().filter(|&&label| label != 0).count() != max_label {
+        return Err(OperatorError::Invalid(
+            "component labels must be dense with background zero".into(),
+        ));
+    }
+    let mut summaries = vec![ComponentSummary::default(); max_label + 1];
+    for &label in labels {
+        summaries[label as usize].cell_count += 1;
+    }
+    let mut vertex_area = vec![0.0; n];
+    for &[ai, bi, ci] in &mesh.triangles {
+        let [a, b, c] = [ai, bi, ci].map(|id| id as usize);
+        if a >= n || b >= n || c >= n || a == b || b == c || c == a {
+            return Err(OperatorError::Invalid("invalid mesh triangle".into()));
+        }
+        let (a, b, c) = (
+            mesh.positions[a].normalize(),
+            mesh.positions[b].normalize(),
+            mesh.positions[c].normalize(),
+        );
+        let area = 2.0
+            * a.dot(b.cross(c))
+                .abs()
+                .atan2(1.0 + a.dot(b) + b.dot(c) + c.dot(a));
+        for id in [ai, bi, ci] {
+            vertex_area[id as usize] += area / 3.0;
+        }
+    }
+    for (i, &label) in labels.iter().enumerate() {
+        summaries[label as usize].area += vertex_area[i];
+    }
+    for (i, adjacent) in mesh.neighbors.iter().enumerate() {
+        for &neighbor in adjacent {
+            let j = neighbor as usize;
+            if i >= j || labels[i] == labels[j] {
+                continue;
+            }
+            let length = mesh.positions[i]
+                .normalize()
+                .dot(mesh.positions[j].normalize())
+                .clamp(-1.0, 1.0)
+                .acos();
+            if labels[i] != 0 {
+                summaries[labels[i] as usize].perimeter += length;
+            }
+            if labels[j] != 0 {
+                summaries[labels[j] as usize].perimeter += length;
+            }
+        }
+    }
+    Ok(summaries)
+}
+
+/// Broadcast a component summary measure to cells; label zero always broadcasts zero.
+pub fn component_measure_broadcast(
+    labels: &[u32],
+    summaries: &[ComponentSummary],
+    measure: ComponentMeasure,
+) -> Result<Vec<f64>> {
+    let expected_len = labels.iter().copied().max().unwrap_or(0) as usize + 1;
+    if summaries.len() != expected_len {
+        return Err(OperatorError::Invalid(
+            "component labels and summaries are not aligned".into(),
+        ));
+    }
+    Ok(labels
+        .iter()
+        .map(|&label| {
+            if label == 0 {
+                return 0.0;
+            }
+            let summary = summaries[label as usize];
+            match measure {
+                ComponentMeasure::Area => summary.area,
+                ComponentMeasure::Perimeter => summary.perimeter,
+                ComponentMeasure::CellCount => summary.cell_count as f64,
+            }
+        })
+        .collect())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Scalar(f64),
@@ -80,6 +218,29 @@ fn validate_mesh(mesh: &Mesh) -> Result<()> {
     let n = mesh.positions.len();
     if mesh.neighbors.iter().flatten().any(|&i| i as usize >= n) {
         return Err(OperatorError::Invalid("neighbor id out of bounds".into()));
+    }
+    Ok(())
+}
+
+fn validate_component_mesh(mesh: &Mesh) -> Result<()> {
+    validate_mesh(mesh)?;
+    let n = mesh.positions.len();
+    for (i, adjacent) in mesh.neighbors.iter().enumerate() {
+        let mut unique = std::collections::BTreeSet::new();
+        for &neighbor in adjacent {
+            let j = neighbor as usize;
+            if j >= n {
+                return Err(OperatorError::Invalid("neighbor id out of bounds".into()));
+            }
+            if j == i || !unique.insert(neighbor) {
+                return Err(OperatorError::Invalid(
+                    "self or duplicate neighbor entry".into(),
+                ));
+            }
+            if !mesh.neighbors[j].contains(&(i as CellId)) {
+                return Err(OperatorError::Invalid("asymmetric mesh adjacency".into()));
+            }
+        }
     }
     Ok(())
 }
@@ -781,6 +942,105 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn connected_components_are_dense_ordered_and_validate_adjacency() {
+        let mut mesh = line_mesh(6);
+        assert_eq!(
+            connected_components(&mesh, &[false; 6]).unwrap(),
+            vec![0; 6]
+        );
+        assert_eq!(connected_components(&mesh, &[true; 6]).unwrap(), vec![1; 6]);
+        assert_eq!(
+            connected_components(&mesh, &[true, true, false, true, true, false]).unwrap(),
+            vec![1, 1, 0, 2, 2, 0]
+        );
+        let mask = [true, false, true, false, true, false];
+        let expected = connected_components(&mesh, &mask).unwrap();
+        for neighbors in &mut mesh.neighbors {
+            neighbors.reverse();
+        }
+        assert_eq!(connected_components(&mesh, &mask).unwrap(), expected);
+        mesh.neighbors[0].push(1);
+        assert!(connected_components(&mesh, &mask).is_err());
+        mesh.neighbors[0].pop();
+        mesh.neighbors[0].clear();
+        assert!(connected_components(&mesh, &mask).is_err());
+        mesh.neighbors[0] = vec![1, 1];
+        assert!(connected_components(&mesh, &mask).is_err());
+        mesh.neighbors[0] = vec![99];
+        assert!(connected_components(&mesh, &mask).is_err());
+    }
+
+    #[test]
+    fn spherical_components_match_unit_sphere_area_and_broadcast_measures() {
+        let mesh = muse_geom::icosphere(2).unwrap();
+        let labels = connected_components(&mesh, &vec![true; mesh.positions.len()]).unwrap();
+        let summaries = component_summaries(&mesh, &labels).unwrap();
+        assert_eq!(summaries[1].cell_count, mesh.positions.len());
+        assert!((summaries[1].area - 4.0 * std::f64::consts::PI).abs() < 1e-10);
+        assert_eq!(summaries[1].perimeter, 0.0);
+        for measure in [
+            ComponentMeasure::Area,
+            ComponentMeasure::Perimeter,
+            ComponentMeasure::CellCount,
+        ] {
+            let broadcast = component_measure_broadcast(&labels, &summaries, measure).unwrap();
+            let expected = match measure {
+                ComponentMeasure::Area => summaries[1].area,
+                ComponentMeasure::Perimeter => summaries[1].perimeter,
+                ComponentMeasure::CellCount => mesh.positions.len() as f64,
+            };
+            assert_eq!(broadcast, vec![expected; mesh.positions.len()]);
+        }
+        assert!(
+            component_measure_broadcast(&labels, &summaries[..1], ComponentMeasure::Area).is_err()
+        );
+
+        let mask: Vec<_> = (0..mesh.positions.len()).map(|i| i % 3 != 0).collect();
+        let labels = connected_components(&mesh, &mask).unwrap();
+        let summaries = component_summaries(&mesh, &labels).unwrap();
+        let area = summaries
+            .iter()
+            .skip(1)
+            .map(|summary| summary.area)
+            .sum::<f64>();
+        let selected_area = mesh
+            .triangles
+            .iter()
+            .map(|[ai, bi, ci]| {
+                let (a, b, c) = (
+                    mesh.positions[*ai as usize].normalize(),
+                    mesh.positions[*bi as usize].normalize(),
+                    mesh.positions[*ci as usize].normalize(),
+                );
+                let share = 2.0
+                    * a.dot(b.cross(c))
+                        .abs()
+                        .atan2(1.0 + a.dot(b) + b.dot(c) + c.dot(a))
+                    / 3.0;
+                [*ai, *bi, *ci]
+                    .iter()
+                    .filter(|&&i| mask[i as usize])
+                    .count() as f64
+                    * share
+            })
+            .sum::<f64>();
+        assert!((area - selected_area).abs() < 1e-12);
+
+        let mesh = Mesh {
+            positions: vec![DVec3::X, DVec3::Y, DVec3::Z],
+            triangles: vec![],
+            neighbors: vec![vec![1], vec![0, 2], vec![1]],
+        };
+        let labels = [1, 0, 0];
+        let summaries = component_summaries(&mesh, &labels).unwrap();
+        assert!((summaries[1].perimeter - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert_eq!(
+            component_measure_broadcast(&labels, &summaries, ComponentMeasure::CellCount).unwrap(),
+            vec![1.0, 0.0, 0.0]
+        );
     }
     #[test]
     fn constant_and_noise_are_stable_and_node_keyed() {
