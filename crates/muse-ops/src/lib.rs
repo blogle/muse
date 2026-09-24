@@ -406,7 +406,7 @@ pub fn advect(mesh: &Mesh, values: &[f64], velocity: &[DVec3]) -> Result<Vec<f64
                     let len2 = tangent.length_squared();
                     (len2 > 1e-24).then_some((id, tangent.dot(upstream) / len2.sqrt()))
                 })
-                .max_by(|(ja, da), (jb, db)| da.total_cmp(db).then_with(|| jb.cmp(ja)))
+                .min_by(|(ja, da), (jb, db)| db.total_cmp(da).then_with(|| ja.cmp(jb)))
                 .map_or(i, |(id, _)| id as usize);
             (1.0 - w) * values[i] + w * values[source]
         })
@@ -996,6 +996,25 @@ mod tests {
                 .all(|v| v.is_finite())
         );
         assert_eq!(mesh, state.mesh);
+    }
+
+    #[test]
+    fn advect_equal_alignment_chooses_lowest_cell_id() {
+        let mesh = Mesh {
+            positions: vec![
+                DVec3::X,
+                DVec3::new(0.0, 1.0, 1.0).normalize(),
+                DVec3::new(0.0, 1.0, -1.0).normalize(),
+            ],
+            triangles: vec![],
+            neighbors: vec![vec![2, 1], vec![], vec![]],
+        };
+        let values = [0.0, 11.0, 22.0];
+        let velocity = [-DVec3::Y, DVec3::ZERO, DVec3::ZERO];
+
+        // Cells 1 and 2 have exactly equal upstream alignment. Deliberately list
+        // cell 2 first to ensure selection is based on CellId, not neighbor order.
+        assert_eq!(advect(&mesh, &values, &velocity).unwrap()[0], 11.0);
     }
 
     #[test]
