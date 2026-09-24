@@ -782,6 +782,12 @@ fn config_arguments(op: &str) -> &'static [(&'static str, bool, ValueType)] {
     match op {
         "constant" => &[("value", true, ValueType::Scalar)],
         "noise" => &[("scale", false, ValueType::Scalar)],
+        "smooth_radius" => &[("radius", true, ValueType::Scalar)],
+        "correlated_noise" => &[
+            ("radius", true, ValueType::Scalar),
+            ("amplitude", false, ValueType::Scalar),
+            ("mean", false, ValueType::Scalar),
+        ],
         "voronoi_labels" => &[("count", true, ValueType::Scalar)],
         "diffuse" => &[
             ("rate", true, ValueType::Scalar),
@@ -1063,6 +1069,27 @@ mod tests {
             error
                 .to_string()
                 .contains("programs.generate.nodes.velocity.inputs.x")
+        );
+    }
+
+    #[test]
+    fn spatial_operator_signatures_validate_field_and_config_paths() {
+        let source = "inputs:\n  source: scalar_field\nprograms:\n  generate:\n    nodes:\n      smooth:\n        op: smooth_radius\n        args: {field: $input.source, radius: 0.2}\n      noise:\n        op: correlated_noise\n        args: {radius: 0.3}\n";
+        assert_eq!(compile(source).unwrap().nodes.len(), 2);
+        let wrong_field = source.replace("source: scalar_field", "source: vector_field");
+        let error = compile(&wrong_field).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::TypeMismatch);
+        assert!(
+            error
+                .to_string()
+                .contains("programs.generate.nodes.smooth.args.field")
+        );
+        let missing_radius = source.replace("args: {radius: 0.3}", "args: {mean: 1.0}");
+        let error = compile(&missing_radius).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("programs.generate.nodes.noise.args.radius")
         );
     }
 

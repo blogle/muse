@@ -273,6 +273,308 @@ pub fn noise(mesh: &Mesh, seed: u64, node_key: &str, scale: f64) -> Vec<f64> {
         .collect()
 }
 
+/// Immutable geometric data shared by spatial operators for one mesh execution.
+#[derive(Clone, Debug)]
+pub struct MeshCalibration {
+    positions: Vec<DVec3>,
+    areas: Vec<f64>,
+    adjacency: Vec<Vec<usize>>,
+    max_edge: f64,
+}
+
+impl MeshCalibration {
+    pub fn new(mesh: &Mesh) -> Result<Self> {
+        validate_mesh(mesh)?;
+        let positions = mesh
+            .positions
+            .iter()
+            .map(|p| {
+                let length = p.length();
+                if !p.is_finite() || !length.is_finite() || length <= 1e-15 {
+                    return None;
+                }
+                Some(*p / length)
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                OperatorError::Invalid("mesh contains invalid spherical position".into())
+            })?;
+        if positions.is_empty() {
+            return Err(OperatorError::Invalid(
+                "mesh must contain spherical vertices".into(),
+            ));
+        }
+        let mut areas = vec![0.0; positions.len()];
+        for triangle in &mesh.triangles {
+            let [a, b, c] = triangle.map(|id| id as usize);
+            if a >= positions.len()
+                || b >= positions.len()
+                || c >= positions.len()
+                || a == b
+                || b == c
+                || a == c
+            {
+                return Err(OperatorError::Invalid("invalid mesh triangle".into()));
+            }
+            let (pa, pb, pc) = (positions[a], positions[b], positions[c]);
+            let excess = 2.0
+                * pa.dot(pb.cross(pc))
+                    .abs()
+                    .atan2(1.0 + pa.dot(pb) + pb.dot(pc) + pc.dot(pa));
+            if !excess.is_finite() || excess <= 0.0 {
+                return Err(OperatorError::Invalid(
+                    "degenerate spherical triangle".into(),
+                ));
+            }
+            for id in [a, b, c] {
+                areas[id] += excess / 3.0;
+            }
+        }
+        if !positions.is_empty() && areas.iter().any(|a| !a.is_finite() || *a <= 0.0) {
+            return Err(OperatorError::Invalid(
+                "mesh has no valid spherical vertex areas".into(),
+            ));
+        }
+        let mut adjacency = mesh
+            .neighbors
+            .iter()
+            .map(|ns| {
+                let mut values = ns.iter().map(|&j| j as usize).collect::<Vec<_>>();
+                values.sort_unstable();
+                values.dedup();
+                values
+            })
+            .collect::<Vec<_>>();
+        for (i, ns) in adjacency.iter().enumerate() {
+            if ns.iter().any(|&j| adjacency[j].binary_search(&i).is_err()) {
+                return Err(OperatorError::Invalid(
+                    "mesh adjacency must be symmetric".into(),
+                ));
+            }
+        }
+        let normalized_positions = &positions;
+        let max_edge = adjacency
+            .iter()
+            .enumerate()
+            .flat_map(|(i, ns)| {
+                ns.iter().map(move |&j| {
+                    normalized_positions[i]
+                        .dot(normalized_positions[j])
+                        .clamp(-1.0, 1.0)
+                        .acos()
+                })
+            })
+            .fold(0.0_f64, f64::max);
+        for ns in &mut adjacency {
+            ns.shrink_to_fit();
+        }
+        let total_area = areas.iter().sum::<f64>();
+        if !total_area.is_finite() || total_area <= 0.0 {
+            return Err(OperatorError::Invalid(
+                "invalid total spherical area".into(),
+            ));
+        }
+        Ok(Self {
+            positions,
+            areas,
+            adjacency,
+            max_edge,
+        })
+    }
+
+    pub fn smooth_radius(&self, values: &[f64], radius: f64) -> Result<Vec<f64>> {
+        if values.len() != self.positions.len() {
+            return Err(OperatorError::Invalid("field length mismatch".into()));
+        }
+        if values.iter().any(|v| !v.is_finite()) {
+            return Err(OperatorError::Invalid(
+                "field contains non-finite values".into(),
+            ));
+        }
+        if !radius.is_finite() || radius < 0.0 {
+            return Err(OperatorError::Invalid(
+                "radius must be finite and nonnegative".into(),
+            ));
+        }
+        if radius == 0.0 {
+            return Ok(values.to_vec());
+        }
+        let r2 = radius * radius;
+        let mut output = vec![0.0; values.len()];
+        output
+            .par_iter_mut()
+            .enumerate()
+            .try_for_each(|(i, target)| -> Result<()> {
+                let mut seen = vec![false; values.len()];
+                let mut frontier = vec![i];
+                seen[i] = true;
+                let mut weighted = 0.0;
+                let mut total = 0.0;
+                let mut cursor = 0;
+                while cursor < frontier.len() {
+                    let j = frontier[cursor];
+                    cursor += 1;
+                    let dot = self.positions[i].dot(self.positions[j]).clamp(-1.0, 1.0);
+                    let d = dot.acos();
+                    if d <= radius {
+                        let q = (d * d / r2).min(1.0);
+                        let w = (1.0 - q).powi(2) * self.areas[j];
+                        weighted += w * values[j];
+                        total += w;
+                    }
+                    if d <= radius + self.max_edge {
+                        for &k in &self.adjacency[j] {
+                            if !seen[k] {
+                                seen[k] = true;
+                                frontier.push(k);
+                            }
+                        }
+                    }
+                }
+                if !total.is_finite() || total <= 0.0 || !weighted.is_finite() {
+                    return Err(OperatorError::Invalid(
+                        "invalid smoothing weight sum".into(),
+                    ));
+                }
+                *target = weighted / total;
+                Ok(())
+            })?;
+        let area_sum: f64 = self.areas.iter().sum();
+        let mean_in = values
+            .iter()
+            .zip(&self.areas)
+            .map(|(v, a)| v * a)
+            .sum::<f64>()
+            / area_sum;
+        let mean_out = output
+            .iter()
+            .zip(&self.areas)
+            .map(|(v, a)| v * a)
+            .sum::<f64>()
+            / area_sum;
+        let delta = mean_in - mean_out;
+        output.iter_mut().for_each(|v| *v += delta);
+        if !delta.is_finite() || output.iter().any(|value| !value.is_finite()) {
+            return Err(OperatorError::Invalid(
+                "smoothing produced non-finite values".into(),
+            ));
+        }
+        Ok(output)
+    }
+
+    /// Number of positively weighted source/destination pairs at this radius.
+    pub fn neighborhood_count(&self, radius: f64) -> Result<usize> {
+        if !radius.is_finite() || radius < 0.0 {
+            return Err(OperatorError::Invalid(
+                "radius must be finite and nonnegative".into(),
+            ));
+        }
+        if radius == 0.0 {
+            return Ok(self.positions.len());
+        }
+        let mut count = 0;
+        for i in 0..self.positions.len() {
+            let mut seen = vec![false; self.positions.len()];
+            let mut pending = vec![i];
+            seen[i] = true;
+            let mut cursor = 0;
+            while cursor < pending.len() {
+                let j = pending[cursor];
+                cursor += 1;
+                let d = self.positions[i]
+                    .dot(self.positions[j])
+                    .clamp(-1.0, 1.0)
+                    .acos();
+                if d < radius {
+                    count += 1;
+                }
+                if d <= radius + self.max_edge {
+                    for &k in &self.adjacency[j] {
+                        if !seen[k] {
+                            seen[k] = true;
+                            pending.push(k);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    pub fn area_weighted_mean_std(&self, values: &[f64]) -> Result<(f64, f64)> {
+        if values.len() != self.areas.len() {
+            return Err(OperatorError::Invalid("field length mismatch".into()));
+        }
+        let area = self.areas.iter().sum::<f64>();
+        let mean = values
+            .iter()
+            .zip(&self.areas)
+            .map(|(v, a)| v * a)
+            .sum::<f64>()
+            / area;
+        let variance = values
+            .iter()
+            .zip(&self.areas)
+            .map(|(v, a)| a * (v - mean).powi(2))
+            .sum::<f64>()
+            / area;
+        if !mean.is_finite() || !variance.is_finite() {
+            return Err(OperatorError::Invalid(
+                "non-finite area-weighted statistics".into(),
+            ));
+        }
+        Ok((mean, variance.sqrt()))
+    }
+}
+
+/// One compact-support spherical convolution. For d < radius, w=(1-(d/radius)^2)^2.
+pub fn smooth_radius(mesh: &Mesh, values: &[f64], radius: f64) -> Result<Vec<f64>> {
+    MeshCalibration::new(mesh)?.smooth_radius(values, radius)
+}
+
+pub fn correlated_noise(
+    mesh: &Mesh,
+    seed: u64,
+    node_key: &str,
+    radius: f64,
+    amplitude: f64,
+    mean: f64,
+) -> Result<Vec<f64>> {
+    let calibration = MeshCalibration::new(mesh)?;
+    correlated_noise_calibrated(&calibration, mesh, seed, node_key, radius, amplitude, mean)
+}
+
+pub fn correlated_noise_calibrated(
+    calibration: &MeshCalibration,
+    mesh: &Mesh,
+    seed: u64,
+    node_key: &str,
+    radius: f64,
+    amplitude: f64,
+    mean: f64,
+) -> Result<Vec<f64>> {
+    if !amplitude.is_finite() || !mean.is_finite() {
+        return Err(OperatorError::Invalid(
+            "amplitude and mean must be finite".into(),
+        ));
+    }
+    let smooth = calibration.smooth_radius(&noise(mesh, seed, node_key, 1.0), radius)?;
+    let (actual_mean, stddev) = calibration.area_weighted_mean_std(&smooth)?;
+    if stddev <= 1e-12 {
+        return Ok(vec![mean; smooth.len()]);
+    }
+    let output = smooth
+        .into_iter()
+        .map(|v| mean + amplitude * (v - actual_mean) / stddev)
+        .collect::<Vec<_>>();
+    if output.iter().any(|value| !value.is_finite()) {
+        return Err(OperatorError::Invalid(
+            "correlated noise produced non-finite values".into(),
+        ));
+    }
+    Ok(output)
+}
+
 pub fn neighbor_sample(mesh: &Mesh, values: &[f64]) -> Result<Vec<f64>> {
     validate_mesh(mesh)?;
     if values.len() != mesh.positions.len() {
@@ -692,6 +994,15 @@ pub fn execute_with_inputs(
         return Err(OperatorError::UnknownInput(unused.clone()));
     }
     let mut store = FieldStore::default();
+    let calibration = if program
+        .nodes
+        .iter()
+        .any(|n| n.op == "smooth_radius" || n.op == "correlated_noise")
+    {
+        Some(MeshCalibration::new(&state.mesh)?)
+    } else {
+        None
+    };
     for node in &program.nodes {
         let scalar = |name: &str| -> Result<f64> {
             match node.args.get(name) {
@@ -817,6 +1128,15 @@ pub fn execute_with_inputs(
                 };
                 Value::Field(Field::Scalar(noise(&state.mesh, state.seed, &node.id, scale)))
             }
+            "smooth_radius" => match field("field")? {
+                Field::Scalar(v) => Value::Field(Field::Scalar(calibration.as_ref().unwrap().smooth_radius(&v, scalar("radius")?)?)),
+                _ => return Err(OperatorError::Invalid("field must be scalar".into())),
+            },
+            "correlated_noise" => Value::Field(Field::Scalar(correlated_noise_calibrated(
+                calibration.as_ref().unwrap(), &state.mesh, state.seed, &node.id, scalar("radius")?,
+                match node.args.get("amplitude") { Some(_) => scalar("amplitude")?, None => 1.0 },
+                match node.args.get("mean") { Some(_) => scalar("mean")?, None => 0.0 },
+            )?)),
             "neighbor_sample" => match field("field")? {
                 Field::Scalar(v) => Value::Field(Field::Scalar(neighbor_sample(&state.mesh, &v)?)),
                 _ => return Err(OperatorError::Invalid("field must be scalar".into())),
@@ -1048,6 +1368,63 @@ mod tests {
         assert_eq!(constant(&m, 2.5), vec![2.5; 16]);
         assert_eq!(noise(&m, 7, "a", 1.0), noise(&m, 7, "a", 1.0));
         assert_ne!(noise(&m, 7, "a", 1.0), noise(&m, 7, "b", 1.0));
+    }
+
+    #[test]
+    fn spherical_radius_kernel_preserves_identity_constants_mean_and_determinism() {
+        let mesh = muse_geom::icosphere(2).unwrap();
+        let calibration = MeshCalibration::new(&mesh).unwrap();
+        let field: Vec<_> = (0..mesh.positions.len())
+            .map(|i| (i as f64 * 0.71).sin())
+            .collect();
+        assert_eq!(calibration.smooth_radius(&field, 0.0).unwrap(), field);
+        let constant = calibration
+            .smooth_radius(&vec![3.25; field.len()], 0.3)
+            .unwrap();
+        assert!(constant.iter().all(|v| (*v - 3.25).abs() < 1e-12));
+        let smoothed = calibration.smooth_radius(&field, 0.8).unwrap();
+        let (before, _) = calibration.area_weighted_mean_std(&field).unwrap();
+        let (after, _) = calibration.area_weighted_mean_std(&smoothed).unwrap();
+        assert!((before - after).abs() < 1e-12);
+        assert_eq!(smoothed, calibration.smooth_radius(&field, 0.8).unwrap());
+        let one = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let four = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        assert_eq!(
+            one.install(|| calibration.smooth_radius(&field, 0.8).unwrap()),
+            four.install(|| calibration.smooth_radius(&field, 0.8).unwrap())
+        );
+        assert!(
+            calibration.area_weighted_mean_std(&smoothed).unwrap().1
+                < calibration.area_weighted_mean_std(&field).unwrap().1
+        );
+    }
+
+    #[test]
+    fn correlated_noise_normalizes_and_is_keyed() {
+        let mesh = muse_geom::icosphere(2).unwrap();
+        let calibration = MeshCalibration::new(&mesh).unwrap();
+        let a = correlated_noise(&mesh, 12, "a", 0.12, 2.0, 3.0).unwrap();
+        let repeat = correlated_noise(&mesh, 12, "a", 0.12, 2.0, 3.0).unwrap();
+        let b = correlated_noise(&mesh, 12, "b", 0.12, 2.0, 3.0).unwrap();
+        assert_eq!(a, repeat);
+        assert_ne!(a, b);
+        let (mean, stddev) = calibration.area_weighted_mean_std(&a).unwrap();
+        assert!((mean - 3.0).abs() < 1e-12);
+        assert!((stddev - 2.0).abs() < 1e-10);
+        assert_eq!(
+            correlated_noise(&mesh, 1, "x", 1.0, 0.0, -4.0).unwrap(),
+            vec![-4.0; mesh.positions.len()]
+        );
+        assert_eq!(
+            correlated_noise(&mesh, 1, "x", 1.0e10, 2.0, -4.0).unwrap(),
+            vec![-4.0; mesh.positions.len()]
+        );
     }
     #[test]
     fn pointwise_executes_cel_over_named_dense_bindings() {
