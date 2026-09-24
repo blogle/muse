@@ -811,7 +811,13 @@ dependencies = [
 name = "muse-validate"
 version = "0.1.0"
 dependencies = [
+ "cel",
+ "insta",
  "muse-types",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

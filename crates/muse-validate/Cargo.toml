@@ -6,4 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+cel.workspace = true
 muse-types = { path = "../muse-types" }
+serde.workspace = true
+serde-saphyr.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
