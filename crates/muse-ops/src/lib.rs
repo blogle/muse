@@ -181,6 +181,92 @@ pub fn diffuse(mesh: &Mesh, values: &[f64], rate: f64, iterations: usize) -> Res
     Ok(state)
 }
 
+/// Smooth over an angular radius, calibrated from unique-edge geodesic spacing.
+/// With fixed rate 0.2, steps = ceil((radius / median_edge)^2 / 0.2).
+pub fn smooth_radius(mesh: &Mesh, values: &[f64], radius: f64) -> Result<Vec<f64>> {
+    validate_mesh(mesh)?;
+    if values.len() != mesh.positions.len() || values.iter().any(|v| !v.is_finite()) {
+        return Err(OperatorError::Invalid(
+            "smooth_radius requires a finite scalar field matching the mesh".into(),
+        ));
+    }
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(OperatorError::Invalid(
+            "smooth_radius radius must be finite and > 0 radians".into(),
+        ));
+    }
+    let mut lengths = Vec::new();
+    for (i, neighbors) in mesh.neighbors.iter().enumerate() {
+        for &j in neighbors {
+            let j = j as usize;
+            if i < j {
+                let a = mesh.positions[i].normalize();
+                let b = mesh.positions[j].normalize();
+                lengths.push(a.dot(b).clamp(-1.0, 1.0).acos());
+            }
+        }
+    }
+    if lengths.is_empty()
+        || lengths
+            .iter()
+            .any(|length| !length.is_finite() || *length <= 0.0)
+    {
+        return Err(OperatorError::Invalid(
+            "smooth_radius requires nonzero unique geodesic edges".into(),
+        ));
+    }
+    lengths.sort_by(f64::total_cmp);
+    let middle = lengths.len() / 2;
+    let h = if lengths.len() % 2 == 0 {
+        (lengths[middle - 1] + lengths[middle]) * 0.5
+    } else {
+        lengths[middle]
+    };
+    let steps = ((radius / h).powi(2) / 0.2).ceil();
+    if !steps.is_finite() || steps > usize::MAX as f64 {
+        return Err(OperatorError::Invalid(
+            "smooth_radius requested radius needs too many diffusion steps".into(),
+        ));
+    }
+    diffuse(mesh, values, 0.2, steps.max(1.0) as usize)
+}
+
+/// Deterministic node-keyed noise smoothed to an angular scale and standardized.
+/// Degenerate/non-finite smoothed output is defined as all zeros.
+pub fn correlated_noise(
+    mesh: &Mesh,
+    seed: u64,
+    node_key: &str,
+    radius: f64,
+    amplitude: f64,
+) -> Result<Vec<f64>> {
+    if !amplitude.is_finite() {
+        return Err(OperatorError::Invalid(
+            "correlated_noise amplitude must be finite".into(),
+        ));
+    }
+    let base = noise(mesh, seed, &format!("{node_key}:correlated-base"), 1.0);
+    let values = smooth_radius(mesh, &base, radius)?;
+    Ok(standardize(values, amplitude))
+}
+
+fn standardize(mut values: Vec<f64>, amplitude: f64) -> Vec<f64> {
+    if values.is_empty() {
+        return values;
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+    if !variance.is_finite() || variance <= 1e-24 {
+        return vec![0.0; values.len()];
+    }
+    let scale = amplitude / variance.sqrt();
+    values.par_iter_mut().for_each(|v| *v = (*v - mean) * scale);
+    if values.iter().any(|v| !v.is_finite()) {
+        return vec![0.0; values.len()];
+    }
+    values
+}
+
 pub fn boundary_strength(mesh: &Mesh, labels: &[u32]) -> Result<Vec<f64>> {
     validate_mesh(mesh)?;
     if labels.len() != mesh.positions.len() {
@@ -656,6 +742,11 @@ pub fn execute_with_inputs(
                 };
                 Value::Field(Field::Scalar(noise(&state.mesh, state.seed, &node.id, scale)))
             }
+            "smooth_radius" => match field("field")? {
+                Field::Scalar(v) => Value::Field(Field::Scalar(smooth_radius(&state.mesh, &v, scalar("radius")?)?)),
+                _ => return Err(OperatorError::Invalid("field must be scalar".into())),
+            },
+            "correlated_noise" => Value::Field(Field::Scalar(correlated_noise(&state.mesh, state.seed, &node.id, scalar("radius")?, scalar("amplitude")?)?)),
             "neighbor_sample" => match field("field")? {
                 Field::Scalar(v) => Value::Field(Field::Scalar(neighbor_sample(&state.mesh, &v)?)),
                 _ => return Err(OperatorError::Invalid("field must be scalar".into())),
@@ -839,6 +930,37 @@ mod tests {
             values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64
         };
         assert!(variance(&after) <= variance(&before) + 1e-12);
+    }
+
+    #[test]
+    fn radius_smoothing_and_correlated_noise_preserve_scale_and_amplitude_contracts() {
+        let mesh = sphere_mesh();
+        let field = [1.0, -1.0, 0.5, 3.0];
+        assert!(
+            smooth_radius(&mesh, &field, 0.25)
+                .unwrap()
+                .iter()
+                .all(|v| v.is_finite())
+        );
+        assert!(smooth_radius(&mesh, &field, 0.0).is_err());
+        let noise = correlated_noise(&mesh, 42, "terrain", 0.25, 2.0).unwrap();
+        assert_eq!(
+            noise,
+            correlated_noise(&mesh, 42, "terrain", 0.25, 2.0).unwrap()
+        );
+        assert_ne!(
+            noise,
+            correlated_noise(&mesh, 42, "other", 0.25, 2.0).unwrap()
+        );
+        let mean = noise.iter().sum::<f64>() / noise.len() as f64;
+        let variance = noise.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / noise.len() as f64;
+        assert!(mean.abs() < 1e-12);
+        assert!((variance.sqrt() - 2.0).abs() < 1e-12);
+        assert_eq!(
+            correlated_noise(&mesh, 1, "flat", 0.25, 1.0).unwrap().len(),
+            4
+        );
+        assert_eq!(standardize(vec![3.0; 5], 7.0), vec![0.0; 5]);
     }
     #[test]
     fn distance_and_flow_are_valid() {

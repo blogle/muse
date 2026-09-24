@@ -2,7 +2,8 @@ use divan::Bencher;
 use glam::DVec3;
 use muse_geom::icosphere;
 use muse_ops::{
-    PointwiseProgram, accumulate, advect, diffuse, gradient, noise as eval_noise, voronoi_labels,
+    PointwiseProgram, accumulate, advect, correlated_noise, diffuse, gradient, noise as eval_noise,
+    smooth_radius, voronoi_labels,
 };
 use muse_types::Mesh;
 use std::collections::BTreeMap;
@@ -82,6 +83,19 @@ fn advect_level_5(bencher: Bencher) {
         .map(|position| muse_geom::project_tangent(*position, DVec3::new(0.2, 0.3, 0.4)))
         .collect();
     bencher.bench_local(|| advect(&mesh, &field, &velocity));
+}
+
+#[divan::bench]
+fn smooth_radius_level_5(bencher: Bencher) {
+    let mesh = icosphere(5).unwrap();
+    let field: Vec<_> = mesh.positions.iter().map(|p| p.z).collect();
+    bencher.bench_local(|| smooth_radius(&mesh, &field, 0.2));
+}
+
+#[divan::bench]
+fn correlated_noise_level_5(bencher: Bencher) {
+    let mesh = icosphere(5).unwrap();
+    bencher.bench_local(|| correlated_noise(&mesh, 1, "bench", 0.2, 1.0));
 }
 
 fn main() {
