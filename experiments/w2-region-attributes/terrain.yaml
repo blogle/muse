@@ -1,0 +1,45 @@
+version: 1
+inputs:
+  position_x: scalar_field
+  position_y: scalar_field
+  position_z: scalar_field
+parameters:
+  region_count: {type: scalar, default: 9}
+  base_scale: {type: scalar, default: 1.1}
+  base_offset: {type: scalar, default: -0.55}
+  motion_magnitude: {type: scalar, default: 0.7}
+  boundary_gain: {type: scalar, default: 0.03}
+  relief_scale: {type: scalar, default: 0.003}
+  elevation_cutoff: {type: scalar, default: 0.5}
+programs:
+  generate:
+    nodes:
+      regions:
+        op: voronoi_labels
+        args: {count: $param.region_count}
+      broad:
+        op: region_scalar
+        args: {labels: $node.regions.value, scale: $param.base_scale, offset: $param.base_offset}
+      motion:
+        op: region_tangent_vector
+        args: {labels: $node.regions.value, magnitude: $param.motion_magnitude}
+      boundary:
+        op: boundary_relative_normal
+        args: {labels: $node.regions.value, vectors: $node.motion.value}
+      relief:
+        op: noise
+        args: {scale: $param.relief_scale}
+      elevation:
+        op: pointwise
+        inputs: {base: $node.broad.value, interaction: $node.boundary.value, detail: $node.relief.value}
+        params: {gain: $param.boundary_gain}
+        expr: base + interaction * gain + detail
+      land:
+        op: threshold
+        args: {field: $node.elevation.value, threshold: $param.elevation_cutoff}
+    updates:
+      elevation: $node.elevation.value
+      land: $node.land.value
+      region_labels: $node.regions.value
+      region_motion: $node.motion.value
+      boundary_interaction: $node.boundary.value

@@ -203,6 +203,125 @@ pub fn boundary_strength(mesh: &Mesh, labels: &[u32]) -> Result<Vec<f64>> {
         .collect())
 }
 
+/// Assign one deterministic scalar to each category, shared by every cell in it.
+pub fn region_scalar(
+    labels: &[u32],
+    seed: u64,
+    node_id: &str,
+    scale: f64,
+    offset: f64,
+) -> Result<Vec<f64>> {
+    if !scale.is_finite() || !offset.is_finite() {
+        return Err(OperatorError::Invalid(
+            "region scalar parameters must be finite".into(),
+        ));
+    }
+    let mut values = BTreeMap::new();
+    for &label in labels {
+        values.entry(label).or_insert_with(|| {
+            let mut hash = blake3::Hasher::new();
+            hash.update(&seed.to_le_bytes());
+            hash.update(&(node_id.len() as u64).to_le_bytes());
+            hash.update(node_id.as_bytes());
+            hash.update(&label.to_le_bytes());
+            let unit = u64::from_le_bytes(hash.finalize().as_bytes()[..8].try_into().unwrap())
+                as f64
+                / u64::MAX as f64;
+            offset + scale * unit
+        });
+    }
+    Ok(labels.iter().map(|label| values[label]).collect())
+}
+
+/// Make a deterministic ambient direction for each label and project it tangent per cell.
+pub fn region_tangent_vector(
+    mesh: &Mesh,
+    labels: &[u32],
+    seed: u64,
+    node_id: &str,
+    magnitude: f64,
+) -> Result<Vec<DVec3>> {
+    validate_mesh(mesh)?;
+    if labels.len() != mesh.positions.len() || !magnitude.is_finite() || magnitude < 0.0 {
+        return Err(OperatorError::Invalid(
+            "invalid region tangent vector inputs".into(),
+        ));
+    }
+    let mut directions = BTreeMap::new();
+    for &label in labels {
+        directions.entry(label).or_insert_with(|| {
+            let mut hash = blake3::Hasher::new();
+            hash.update(&seed.to_le_bytes());
+            hash.update(&(node_id.len() as u64).to_le_bytes());
+            hash.update(node_id.as_bytes());
+            hash.update(&label.to_le_bytes());
+            let bytes = hash.finalize();
+            let component = |i| {
+                i32::from_le_bytes(bytes.as_bytes()[i..i + 4].try_into().unwrap()) as f64
+                    / i32::MAX as f64
+            };
+            DVec3::new(component(0), component(4), component(8)).normalize_or_zero()
+        });
+    }
+    Ok(labels
+        .iter()
+        .zip(&mesh.positions)
+        .map(|(&label, position)| {
+            let normal = position.normalize_or_zero();
+            let ambient = directions[&label];
+            let projected = ambient - normal * ambient.dot(normal);
+            let tangent = if projected.length_squared() < 1e-24 {
+                let axis = if normal.x.abs() < 0.8 {
+                    DVec3::X
+                } else {
+                    DVec3::Y
+                };
+                let fallback = axis - normal * axis.dot(normal);
+                fallback.normalize_or_zero()
+            } else {
+                projected.normalize()
+            };
+            tangent * magnitude
+        })
+        .collect())
+}
+
+/// Average signed relative closing speed across unlike-category neighbor edges.
+pub fn boundary_relative_normal(
+    mesh: &Mesh,
+    labels: &[u32],
+    vectors: &[DVec3],
+) -> Result<Vec<f64>> {
+    validate_mesh(mesh)?;
+    let n = mesh.positions.len();
+    if labels.len() != n || vectors.len() != n || vectors.iter().any(|v| !v.is_finite()) {
+        return Err(OperatorError::Invalid(
+            "invalid boundary relative normal inputs".into(),
+        ));
+    }
+    Ok((0..n)
+        .into_par_iter()
+        .map(|i| {
+            let p = mesh.positions[i].normalize_or_zero();
+            let mut sum = 0.0;
+            let mut count = 0;
+            for &neighbor in &mesh.neighbors[i] {
+                let j = neighbor as usize;
+                if labels[i] == labels[j] {
+                    continue;
+                }
+                let q = mesh.positions[j].normalize_or_zero();
+                let normal = (q - p * q.dot(p)).normalize_or_zero();
+                if normal.length_squared() > 0.0 {
+                    sum += (vectors[i] - vectors[j]).dot(normal);
+                    count += 1;
+                }
+            }
+            if count == 0 { 0.0 } else { sum / count as f64 }
+        })
+        .collect())
+}
+
 pub fn distance_to_mask(mesh: &Mesh, mask: &[bool]) -> Result<Vec<f64>> {
     validate_mesh(mesh)?;
     if mask.len() != mesh.positions.len() {
@@ -688,6 +807,18 @@ pub fn execute_with_inputs(
                     ));
                 }
             },
+            "region_scalar" => match field("labels")? {
+                Field::Category(labels) => Value::Field(Field::Scalar(region_scalar(&labels, state.seed, &node.id, scalar("scale")?, scalar("offset")?)?)),
+                _ => return Err(OperatorError::Invalid("labels must be category field".into())),
+            },
+            "region_tangent_vector" => match field("labels")? {
+                Field::Category(labels) => Value::Field(Field::Vector(region_tangent_vector(&state.mesh, &labels, state.seed, &node.id, scalar("magnitude")?)?)),
+                _ => return Err(OperatorError::Invalid("labels must be category field".into())),
+            },
+            "boundary_relative_normal" => match (field("labels")?, field("vectors")?) {
+                (Field::Category(labels), Field::Vector(vectors)) => Value::Field(Field::Scalar(boundary_relative_normal(&state.mesh, &labels, &vectors)?)),
+                _ => return Err(OperatorError::Invalid("boundary_relative_normal requires category labels and vectors".into())),
+            },
             "distance_to_mask" => match field("mask")? {
                 Field::Bool(v) => Value::Field(Field::Scalar(distance_to_mask(&state.mesh, &v)?)),
                 _ => return Err(OperatorError::Invalid("mask must be boolean field".into())),
@@ -788,6 +919,35 @@ mod tests {
         assert_eq!(constant(&m, 2.5), vec![2.5; 16]);
         assert_eq!(noise(&m, 7, "a", 1.0), noise(&m, 7, "a", 1.0));
         assert_ne!(noise(&m, 7, "a", 1.0), noise(&m, 7, "b", 1.0));
+    }
+    #[test]
+    fn region_scalar_reuses_unrelated_category_labels() {
+        let labels = [4, 4, 11, 11, 23, 23];
+        let a = region_scalar(&labels, 19, "shared", 3.0, -2.0).unwrap();
+        assert_eq!(a[0], a[1]);
+        assert_eq!(a[2], a[3]);
+        assert_eq!(a[4], a[5]);
+        assert_eq!(a, region_scalar(&labels, 19, "shared", 3.0, -2.0).unwrap());
+        let unrelated = [8, 8, 2, 2, 31, 31];
+        let b = region_scalar(&unrelated, 19, "shared", 3.0, -2.0).unwrap();
+        for pair in b.chunks(2) {
+            assert_eq!(pair[0], pair[1]);
+        }
+    }
+
+    #[test]
+    fn region_motion_and_boundaries_reuse_unrelated_categories() {
+        let labels = [4, 4, 11, 11, 23, 23];
+        for categories in [&labels[..], &[8, 8, 2, 2, 31, 31][..]] {
+            let mesh = line_mesh(categories.len());
+            let vectors = region_tangent_vector(&mesh, categories, 19, "motion", 0.6).unwrap();
+            assert_eq!(
+                vectors,
+                region_tangent_vector(&mesh, categories, 19, "motion", 0.6).unwrap()
+            );
+            let interaction = boundary_relative_normal(&mesh, categories, &vectors).unwrap();
+            assert!(interaction.iter().all(|value| value.is_finite()));
+        }
     }
     #[test]
     fn pointwise_executes_cel_over_named_dense_bindings() {
