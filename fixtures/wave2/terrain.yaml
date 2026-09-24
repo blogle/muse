@@ -1,0 +1,82 @@
+version: 1
+
+parameters:
+  plate_count:
+    type: scalar
+    default: 18
+  sea_level:
+    type: scalar
+    default: 0.052
+  broad_scale:
+    type: scalar
+    default: 0.16
+  relief_scale:
+    type: scalar
+    default: 0.06
+  tectonic_weight:
+    type: scalar
+    default: 2.0
+  smoothing_rate:
+    type: scalar
+    default: 0.35
+
+programs:
+  generate:
+    nodes:
+      plates:
+        op: voronoi_labels
+        args:
+          count: $param.plate_count
+      boundary:
+        op: boundary_strength
+        args:
+          labels: $node.plates.value
+      tectonic:
+        op: diffuse
+        args:
+          field: $node.boundary.value
+          rate: $param.smoothing_rate
+          iterations: 4
+      broad_noise:
+        op: noise
+        args:
+          scale: $param.broad_scale
+      broad_relief:
+        op: diffuse
+        args:
+          field: $node.broad_noise.value
+          rate: $param.smoothing_rate
+          iterations: 24
+      relief_noise:
+        op: noise
+        args:
+          scale: $param.relief_scale
+      elevation:
+        op: pointwise
+        inputs:
+          tectonic: $node.tectonic.value
+          broad: $node.broad_relief.value
+          relief: $node.relief_noise.value
+        params:
+          tectonic_weight: $param.tectonic_weight
+        expr: tectonic * tectonic_weight + broad + relief
+      land:
+        op: threshold
+        args:
+          field: $node.elevation.value
+          threshold: $param.sea_level
+      elevation_gradient:
+        op: gradient
+        args:
+          field: $node.elevation.value
+      slope:
+        op: vector_magnitude
+        args:
+          field: $node.elevation_gradient.value
+    updates:
+      plate_id: $node.plates.value
+      plate_boundary: $node.boundary.value
+      tectonic_forcing: $node.tectonic.value
+      elevation: $node.elevation.value
+      land_mask: $node.land.value
+      slope: $node.slope.value
