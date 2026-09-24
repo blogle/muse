@@ -374,28 +374,16 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Compilation
                 &node_outputs,
             )?;
             let binding_path = format!("{path}.inputs.{argument}");
-            if op == "vector_expr" {
-                check_expression_binding_type(
-                    &value,
-                    text,
-                    &binding_path,
-                    &node_types,
-                    &doc.inputs,
-                    &doc.parameters,
-                    &aliases,
-                )?;
-            } else {
-                check_type(
-                    ValueType::ScalarField,
-                    &value,
-                    text,
-                    &binding_path,
-                    &node_types,
-                    &doc.inputs,
-                    &doc.parameters,
-                    &aliases,
-                )?;
-            }
+            check_type(
+                ValueType::ScalarField,
+                &value,
+                text,
+                &binding_path,
+                &node_types,
+                &doc.inputs,
+                &doc.parameters,
+                &aliases,
+            )?;
             args.insert(argument.clone(), value);
         }
         for (argument, text) in &spec.params {
@@ -984,44 +972,6 @@ fn check_type(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn check_expression_binding_type(
-    value: &ValueRef,
-    raw: &str,
-    path: &str,
-    nodes: &BTreeMap<String, ValueType>,
-    inputs: &BTreeMap<String, String>,
-    parameters: &BTreeMap<String, ParameterSpec>,
-    aliases: &BTreeMap<String, String>,
-) -> Result<(), CompileError> {
-    let actual = match value {
-        ValueRef::NodeOutput { node, output } => aliases
-            .get(&format!("{node}.{output}"))
-            .and_then(|raw| reference_type(raw, nodes, inputs, parameters, aliases))
-            .or_else(|| nodes.get(node).copied()),
-        ValueRef::Input(name) => inputs.get(name).and_then(|ty| parse_type(ty)),
-        ValueRef::Parameter(name) => parameters
-            .get(name)
-            .and_then(|parameter| parse_type(&parameter.ty)),
-        ValueRef::LiteralScalar(_) => Some(ValueType::Scalar),
-        ValueRef::State(_) => None,
-    };
-    if !matches!(
-        actual,
-        Some(ValueType::ScalarField | ValueType::VectorField)
-    ) {
-        return Err(CompileError::new(
-            ErrorCategory::TypeMismatch,
-            path,
-            format!(
-                "expected ScalarField or VectorField, got {} from {raw}",
-                actual.map_or("unknown".to_owned(), |value| format!("{value:?}"))
-            ),
-        ));
-    }
-    Ok(())
-}
-
 fn parse_type(value: &str) -> Option<ValueType> {
     match value {
         "scalar" => Some(ValueType::Scalar),
@@ -1099,6 +1049,15 @@ mod tests {
 
         let wrong_type = source.replace("position_x: scalar_field", "position_x: scalar");
         let error = compile(&wrong_type).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::TypeMismatch);
+        assert!(
+            error
+                .to_string()
+                .contains("programs.generate.nodes.velocity.inputs.x")
+        );
+
+        let vector_field = source.replace("position_x: scalar_field", "position_x: vector_field");
+        let error = compile(&vector_field).unwrap_err();
         assert_eq!(error.category, ErrorCategory::TypeMismatch);
         assert!(
             error
