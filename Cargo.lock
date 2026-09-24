@@ -813,6 +813,7 @@ version = "0.1.0"
 dependencies = [
  "cel",
  "insta",
+ "muse-geom",
  "muse-types",
  "serde",
  "serde-saphyr",
