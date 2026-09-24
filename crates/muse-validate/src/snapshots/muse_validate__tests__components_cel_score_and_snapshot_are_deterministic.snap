@@ -1,0 +1,20 @@
+---
+source: crates/muse-validate/src/lib.rs
+expression: "serde_json::to_string_pretty(&a).unwrap()"
+---
+{
+  "valid": true,
+  "score": 0.5555555555555555,
+  "metrics": {
+    "components": 2.0,
+    "largest": 0.6666666666666666,
+    "mean": 2.5
+  },
+  "objectives": {
+    "connected": 0.6666666666666666,
+    "quality": 0.5
+  },
+  "constraints": {
+    "enough": true
+  }
+}
