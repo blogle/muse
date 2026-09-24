@@ -1071,6 +1071,7 @@ mod tests {
             panic!("expected vector field");
         };
         for (p, v) in mesh.positions.iter().zip(vectors) {
+            assert!(v.is_finite());
             assert!(p.dot(*v).abs() < 1e-10);
         }
     }
