@@ -2,7 +2,8 @@ use divan::Bencher;
 use glam::DVec3;
 use muse_geom::icosphere;
 use muse_ops::{
-    PointwiseProgram, accumulate, advect, diffuse, gradient, noise as eval_noise, voronoi_labels,
+    MeshCalibration, PointwiseProgram, accumulate, advect, correlated_noise_calibrated, diffuse,
+    gradient, noise as eval_noise, smooth_radius, voronoi_labels,
 };
 use muse_types::Mesh;
 use std::collections::BTreeMap;
@@ -82,6 +83,42 @@ fn advect_level_5(bencher: Bencher) {
         .map(|position| muse_geom::project_tangent(*position, DVec3::new(0.2, 0.3, 0.4)))
         .collect();
     bencher.bench_local(|| advect(&mesh, &field, &velocity));
+}
+
+#[divan::bench(args=[0.12, 0.20, 0.30, 0.62])]
+fn smooth_radius_level_5(bencher: Bencher, radius: f64) {
+    let mesh = icosphere(5).unwrap();
+    let field: Vec<_> = (0..mesh.positions.len())
+        .map(|i| (i as f64 * 0.13).sin())
+        .collect();
+    let calibration = MeshCalibration::new(&mesh).unwrap();
+    eprintln!(
+        "smooth_radius radius={radius:.2} level=5 cells={} neighborhood_pairs={}",
+        field.len(),
+        calibration.neighborhood_count(radius).unwrap()
+    );
+    bencher.bench_local(|| smooth_radius(&mesh, &field, radius));
+}
+
+#[divan::bench(args=[0.12, 0.20, 0.30, 0.62])]
+fn smooth_radius_warm_calibration_level_5(bencher: Bencher, radius: f64) {
+    let mesh = icosphere(5).unwrap();
+    let calibration = MeshCalibration::new(&mesh).unwrap();
+    let field: Vec<_> = (0..mesh.positions.len())
+        .map(|i| (i as f64 * 0.13).sin())
+        .collect();
+    bencher.bench_local(|| calibration.smooth_radius(&field, radius));
+}
+
+#[divan::bench]
+fn correlated_noise_three_scales_level_5(bencher: Bencher) {
+    let mesh = icosphere(5).unwrap();
+    let calibration = MeshCalibration::new(&mesh).unwrap();
+    bencher.bench_local(|| {
+        let _ = correlated_noise_calibrated(&calibration, &mesh, 9, "bench", 0.62, 1.0, 0.0);
+        let _ = correlated_noise_calibrated(&calibration, &mesh, 9, "bench", 0.30, 1.0, 0.0);
+        correlated_noise_calibrated(&calibration, &mesh, 9, "bench", 0.12, 1.0, 0.0)
+    });
 }
 
 fn main() {
