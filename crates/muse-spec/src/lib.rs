@@ -787,6 +787,11 @@ fn config_arguments(op: &str) -> &'static [(&'static str, bool, ValueType)] {
         "constant" => &[("value", true, ValueType::Scalar)],
         "noise" => &[("scale", false, ValueType::Scalar)],
         "voronoi_labels" => &[("count", true, ValueType::Scalar)],
+        "region_scalar" => &[
+            ("scale", true, ValueType::Scalar),
+            ("offset", true, ValueType::Scalar),
+        ],
+        "region_tangent_vector" => &[("magnitude", true, ValueType::Scalar)],
         "diffuse" => &[
             ("rate", true, ValueType::Scalar),
             ("iterations", true, ValueType::Scalar),

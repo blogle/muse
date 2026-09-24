@@ -265,6 +265,32 @@ pub static OPERATOR_DESCRIPTORS: &[OperatorDescriptor] = &[
         outputs: FIELD_OUT,
     },
     OperatorDescriptor {
+        id: "region_scalar",
+        inputs: CATEGORY_IN,
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
+        id: "region_tangent_vector",
+        inputs: CATEGORY_IN,
+        outputs: VECTOR_OUT,
+    },
+    OperatorDescriptor {
+        id: "boundary_relative_normal",
+        inputs: &[
+            PortSpec {
+                name: "labels",
+                ty: ValueType::CategoryField,
+                required: true,
+            },
+            PortSpec {
+                name: "vectors",
+                ty: ValueType::VectorField,
+                required: true,
+            },
+        ],
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
         id: "distance_to_mask",
         inputs: BOOL_IN,
         outputs: FIELD_OUT,
@@ -391,6 +417,9 @@ mod tests {
             "diffuse",
             "advect",
             "boundary_strength",
+            "region_scalar",
+            "region_tangent_vector",
+            "boundary_relative_normal",
             "distance_to_mask",
             "flow_direction",
             "accumulate",
