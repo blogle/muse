@@ -1,0 +1,6 @@
+---
+source: crates/muse-spec/src/lib.rs
+expression: result
+---
+ERROR
+TypeMismatch at programs.generate.nodes.bad.args.a: expected VectorField, got ScalarField from $input.scalar

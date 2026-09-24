@@ -122,6 +122,23 @@ const FIELD_OUT: &[PortSpec] = &[PortSpec {
     ty: ValueType::ScalarField,
     required: true,
 }];
+const BOOL_OUT: &[PortSpec] = &[PortSpec {
+    name: "value",
+    ty: ValueType::BoolField,
+    required: true,
+}];
+const VECTOR_BINARY_IN: &[PortSpec] = &[
+    PortSpec {
+        name: "a",
+        ty: ValueType::VectorField,
+        required: true,
+    },
+    PortSpec {
+        name: "b",
+        ty: ValueType::VectorField,
+        required: true,
+    },
+];
 const VECTOR_OUT: &[PortSpec] = &[PortSpec {
     name: "value",
     ty: ValueType::VectorField,
@@ -276,6 +293,25 @@ pub static OPERATOR_DESCRIPTORS: &[OperatorDescriptor] = &[
             required: true,
         }],
     },
+    OperatorDescriptor {
+        id: "threshold",
+        inputs: FIELD_IN,
+        outputs: BOOL_OUT,
+    },
+    OperatorDescriptor {
+        id: "vector_dot",
+        inputs: VECTOR_BINARY_IN,
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
+        id: "vector_magnitude",
+        inputs: &[PortSpec {
+            name: "field",
+            ty: ValueType::VectorField,
+            required: true,
+        }],
+        outputs: FIELD_OUT,
+    },
 ];
 
 pub fn operator_descriptor(id: &str) -> Option<&'static OperatorDescriptor> {
@@ -360,6 +396,9 @@ mod tests {
             "accumulate",
             "network_threshold",
             "reduce",
+            "threshold",
+            "vector_dot",
+            "vector_magnitude",
         ];
         let ids: Vec<_> = OPERATOR_DESCRIPTORS
             .iter()
@@ -393,6 +432,30 @@ mod tests {
         );
         assert_eq!(operator_descriptor("pointwise").unwrap().inputs, NO_PORTS);
         assert_eq!(operator_descriptor("vector_expr").unwrap().inputs, NO_PORTS);
+        assert_eq!(
+            operator_descriptor("threshold").unwrap().inputs[0].ty,
+            ValueType::ScalarField
+        );
+        assert_eq!(
+            operator_descriptor("threshold").unwrap().outputs[0].ty,
+            ValueType::BoolField
+        );
+        assert_eq!(
+            operator_descriptor("vector_dot").unwrap().inputs,
+            VECTOR_BINARY_IN
+        );
+        assert_eq!(
+            operator_descriptor("vector_dot").unwrap().outputs[0].ty,
+            ValueType::ScalarField
+        );
+        assert_eq!(
+            operator_descriptor("vector_magnitude").unwrap().inputs[0].ty,
+            ValueType::VectorField
+        );
+        assert_eq!(
+            operator_descriptor("vector_magnitude").unwrap().outputs[0].ty,
+            ValueType::ScalarField
+        );
     }
 
     #[test]

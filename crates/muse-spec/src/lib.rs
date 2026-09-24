@@ -21,6 +21,13 @@ pub struct CompileError {
     pub message: String,
 }
 
+/// The selected program and its deterministic top-level numeric defaults.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Compilation {
+    pub program: Program,
+    pub parameters: BTreeMap<String, f64>,
+}
+
 impl CompileError {
     fn new(category: ErrorCategory, path: impl Into<String>, message: impl Into<String>) -> Self {
         let path = path.into();
@@ -124,6 +131,13 @@ struct NodeSpec {
 pub fn compile(source: &str) -> Result<Program, CompileError> {
     let doc: Document = serde_saphyr::from_str(source)
         .map_err(|error| CompileError::new(ErrorCategory::MalformedYaml, "", error.to_string()))?;
+    compile_document(doc, None).map(|result| result.program)
+}
+
+/// Compile a document and retain its top-level numeric parameter defaults.
+pub fn compile_with_defaults(source: &str) -> Result<Compilation, CompileError> {
+    let doc: Document = serde_saphyr::from_str(source)
+        .map_err(|error| CompileError::new(ErrorCategory::MalformedYaml, "", error.to_string()))?;
     compile_document(doc, None)
 }
 
@@ -131,11 +145,22 @@ pub fn compile(source: &str) -> Result<Program, CompileError> {
 pub fn compile_program(source: &str, program_name: &str) -> Result<Program, CompileError> {
     let doc: Document = serde_saphyr::from_str(source)
         .map_err(|error| CompileError::new(ErrorCategory::MalformedYaml, "", error.to_string()))?;
+    compile_document(doc, Some(program_name)).map(|result| result.program)
+}
+
+/// Compile one named program and retain top-level numeric parameter defaults.
+pub fn compile_program_with_defaults(
+    source: &str,
+    program_name: &str,
+) -> Result<Compilation, CompileError> {
+    let doc: Document = serde_saphyr::from_str(source)
+        .map_err(|error| CompileError::new(ErrorCategory::MalformedYaml, "", error.to_string()))?;
     compile_document(doc, Some(program_name))
 }
 
-fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, CompileError> {
+fn compile_document(doc: Document, selected: Option<&str>) -> Result<Compilation, CompileError> {
     validate_declared_types(&doc)?;
+    let parameters = top_level_defaults(&doc.parameters)?;
     let (name, section) = match selected {
         Some(name) => doc.programs.get_key_value(name).ok_or_else(|| {
             CompileError::new(
@@ -485,7 +510,31 @@ fn compile_document(doc: Document, selected: Option<&str>) -> Result<Program, Co
             &node_outputs,
         )?;
     }
-    Ok(Program { nodes, updates })
+    Ok(Compilation {
+        program: Program { nodes, updates },
+        parameters,
+    })
+}
+
+fn top_level_defaults(
+    parameters: &BTreeMap<String, ParameterSpec>,
+) -> Result<BTreeMap<String, f64>, CompileError> {
+    parameters
+        .iter()
+        .filter_map(|(name, parameter)| parameter.default.as_ref().map(|default| (name, default)))
+        .map(|(name, default)| {
+            default
+                .as_f64()
+                .map(|value| (name.clone(), value))
+                .ok_or_else(|| {
+                    CompileError::new(
+                        ErrorCategory::TypeMismatch,
+                        format!("parameters.{name}.default"),
+                        "expected numeric scalar default",
+                    )
+                })
+        })
+        .collect()
 }
 
 fn validate_declared_types(doc: &Document) -> Result<(), CompileError> {
@@ -743,6 +792,7 @@ fn config_arguments(op: &str) -> &'static [(&'static str, bool, ValueType)] {
             ("iterations", true, ValueType::Scalar),
         ],
         "network_threshold" => &[("threshold", true, ValueType::Scalar)],
+        "threshold" => &[("threshold", true, ValueType::Scalar)],
         _ => &[],
     }
 }
@@ -1016,8 +1066,11 @@ mod tests {
                 "error-duplicate-node" => Some("DuplicateNode"),
                 "error-missing-arg" | "error-missing-config" => Some("MissingArgument"),
                 "error-unknown-arg" | "error-duplicate-binding" => Some("UnknownArgument"),
+                "error-earth-threshold-missing-config" => Some("MissingArgument"),
+                "error-earth-vector-magnitude-unknown-config" => Some("UnknownArgument"),
                 "error-unknown-parameter" => Some("UnknownParameter"),
                 "error-type-mismatch"
+                | "error-earth-vector-dot-type"
                 | "error-recipe-binding"
                 | "error-expression-binding"
                 | "error-unknown-type" => Some("TypeMismatch"),
@@ -1061,6 +1114,16 @@ mod tests {
                         .to_string()
                         .contains("programs.generate.nodes.broken.inputs.field")
                 );
+            }
+            if path.file_stem().unwrap() == "valid-earth-operators" {
+                let first = compile_with_defaults(&source).unwrap();
+                let repeated = compile_with_defaults(&source).unwrap();
+                assert_eq!(first, repeated);
+                assert_eq!(
+                    first.parameters,
+                    BTreeMap::from([("cutoff".to_owned(), 0.5), ("unused".to_owned(), 2.0)])
+                );
+                assert_eq!(first.program.nodes.len(), 3);
             }
             insta::with_settings!({snapshot_path => "../../../fixtures/specs/snapshots"}, {
                 insta::assert_snapshot!(path.file_stem().unwrap().to_string_lossy().into_owned(), result);
