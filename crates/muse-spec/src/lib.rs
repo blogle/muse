@@ -788,6 +788,11 @@ fn config_arguments(op: &str) -> &'static [(&'static str, bool, ValueType)] {
             ("amplitude", false, ValueType::Scalar),
             ("mean", false, ValueType::Scalar),
         ],
+        "region_scalar" => &[
+            ("scale", false, ValueType::Scalar),
+            ("offset", false, ValueType::Scalar),
+        ],
+        "boundary_signed_difference" => &[("scale", false, ValueType::Scalar)],
         "voronoi_labels" => &[("count", true, ValueType::Scalar)],
         "diffuse" => &[
             ("rate", true, ValueType::Scalar),
@@ -1090,6 +1095,20 @@ mod tests {
             error
                 .to_string()
                 .contains("programs.generate.nodes.noise.args.radius")
+        );
+    }
+
+    #[test]
+    fn region_operators_validate_field_types_with_argument_paths() {
+        let source = "inputs:\n  labels: category_field\n  values: scalar_field\nprograms:\n  generate:\n    nodes:\n      attr:\n        op: region_scalar\n        args:\n          labels: $input.labels\n          scale: 2.0\n          offset: 1.0\n      edge:\n        op: boundary_signed_difference\n        args:\n          labels: $input.labels\n          values: $input.values\n          scale: 1.0\n";
+        assert_eq!(compile(source).unwrap().nodes.len(), 2);
+        let error =
+            compile(&source.replace("labels: category_field", "labels: scalar_field")).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::TypeMismatch);
+        assert!(
+            error
+                .to_string()
+                .contains("programs.generate.nodes.attr.args.labels")
         );
     }
 
