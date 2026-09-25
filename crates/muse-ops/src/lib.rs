@@ -667,6 +667,7 @@ pub fn boundary_strength(mesh: &Mesh, labels: &[u32]) -> Result<Vec<f64>> {
 }
 
 /// Assign one deterministic scalar to every category, keyed by seed, node ID, and label.
+/// Background category zero always maps to `offset` without keyed variation.
 pub fn region_scalar(
     labels: &[u32],
     seed: u64,
@@ -682,6 +683,9 @@ pub fn region_scalar(
     let mut cache = BTreeMap::new();
     for &label in labels {
         cache.entry(label).or_insert_with(|| {
+            if label == 0 {
+                return offset;
+            }
             let mut hash = blake3::Hasher::new();
             hash.update(&seed.to_le_bytes());
             hash.update(&(node_id.len() as u64).to_le_bytes());
@@ -718,8 +722,7 @@ pub fn boundary_signed_difference(
             "boundary inputs must be finite".into(),
         ));
     }
-    let mut sums = vec![0.0; n];
-    let mut weights = vec![0.0; n];
+    let mut edges = Vec::new();
     for i in 0..n {
         for &neighbor in &mesh.neighbors[i] {
             let j = neighbor as usize;
@@ -739,11 +742,19 @@ pub fn boundary_signed_difference(
             }
             let length = pi.normalize().dot(pj.normalize()).clamp(-1.0, 1.0).acos();
             let difference = (values[j] - values[i]) * scale;
-            sums[i] += difference * length;
-            sums[j] -= difference * length;
-            weights[i] += length;
-            weights[j] += length;
+            edges.push((i, j, difference, length));
         }
+    }
+    // Accumulate each cell's incident edges in canonical CellId-pair order,
+    // independent of the mesh's neighbor-vector ordering.
+    edges.sort_unstable_by_key(|&(i, j, _, _)| (i, j));
+    let mut sums = vec![0.0; n];
+    let mut weights = vec![0.0; n];
+    for (i, j, difference, length) in edges {
+        sums[i] += difference * length;
+        sums[j] -= difference * length;
+        weights[i] += length;
+        weights[j] += length;
     }
     let output: Vec<_> = sums
         .iter()
@@ -1430,6 +1441,10 @@ mod tests {
         let first = region_scalar(&labels, 4, "region", 2.0, 1.0).unwrap();
         assert_eq!(first[0], first[1]);
         assert_eq!(first[3], first[4]);
+        assert_eq!(
+            first[2], 1.0,
+            "background label zero maps exactly to offset"
+        );
         assert_ne!(first[0], first[3]);
         assert_eq!(
             first,
@@ -1448,6 +1463,10 @@ mod tests {
             region_scalar(&[200, 200], 4, "region", 1.0, 0.0).unwrap()[0]
         );
         assert!(region_scalar(&labels, 4, "region", f64::NAN, 0.0).is_err());
+        assert_eq!(
+            region_scalar(&[0, 0], 99, "different-node", 100.0, -3.5).unwrap(),
+            vec![-3.5; 2]
+        );
     }
 
     #[test]
@@ -1482,6 +1501,32 @@ mod tests {
         assert_eq!(
             out,
             boundary_signed_difference(&reversed, &labels, &values, 1.0).unwrap()
+        );
+        let order_sensitive = Mesh {
+            positions: vec![DVec3::X, DVec3::Y, DVec3::Z, -DVec3::Y],
+            triangles: vec![],
+            neighbors: vec![vec![1, 2, 3], vec![0], vec![0], vec![0]],
+        };
+        let order_sensitive_labels = [1, 2, 3, 4];
+        let order_sensitive_values = [0.0, 1.0e16, 1.0, -1.0e16];
+        let canonical_result = boundary_signed_difference(
+            &order_sensitive,
+            &order_sensitive_labels,
+            &order_sensitive_values,
+            1.0,
+        )
+        .unwrap();
+        let mut permuted = order_sensitive.clone();
+        permuted.neighbors[0] = vec![1, 3, 2];
+        assert_eq!(
+            canonical_result,
+            boundary_signed_difference(
+                &permuted,
+                &order_sensitive_labels,
+                &order_sensitive_values,
+                1.0,
+            )
+            .unwrap()
         );
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(2)
