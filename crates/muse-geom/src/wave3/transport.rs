@@ -1,8 +1,9 @@
-//! Shared numerical conventions for Wave 3 surface-vector operators.
+//! Tangent projection and deterministic shortest-geodesic vector transport.
 use glam::DVec3;
 
 /// Named f64 radial/tangency tolerance for unit-sphere fields.
 pub const TANGENCY_TOLERANCE: f64 = 1.0e-10;
+/// Epsilon used for degenerate sphere positions and transport fallbacks.
 pub const DEGENERACY_EPSILON: f64 = 1.0e-12;
 
 /// Projects to the unit-position tangent plane, returning zero for invalid geometry.
@@ -41,6 +42,21 @@ pub fn parallel_transport(from: DVec3, to: DVec3, vector: DVec3) -> DVec3 {
     project_tangent(b, transported)
 }
 
+/// Signed normal motion along a canonical source-to-target edge. Positive is approach.
+pub fn boundary_normal_relative_motion(
+    source_position: DVec3,
+    target_position: DVec3,
+    source_velocity: DVec3,
+    target_velocity: DVec3,
+    edge_tangent_source_to_target: DVec3,
+) -> f64 {
+    let target_at_source = parallel_transport(target_position, source_position, target_velocity);
+    let source_velocity = project_tangent(source_position, source_velocity);
+    let tangent =
+        project_tangent(source_position, edge_tangent_source_to_target).normalize_or_zero();
+    (source_velocity - target_at_source).dot(tangent)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +69,19 @@ mod tests {
                 assert!(to.normalize().dot(moved).abs() < TANGENCY_TOLERANCE);
             }
         }
+    }
+
+    #[test]
+    fn boundary_normal_is_positive_for_approach_and_reverses_under_velocity_negation() {
+        let source = DVec3::X;
+        let target = DVec3::Y;
+        let tangent = DVec3::Y;
+        // Source moves toward target (+Y); target moves toward source (+X).
+        let approach = boundary_normal_relative_motion(source, target, DVec3::Y, DVec3::X, tangent);
+        let separation =
+            boundary_normal_relative_motion(source, target, -DVec3::Y, -DVec3::X, tangent);
+        assert!(approach > 0.0);
+        assert!(separation < 0.0);
+        assert!((approach + separation).abs() < TANGENCY_TOLERANCE);
     }
 }

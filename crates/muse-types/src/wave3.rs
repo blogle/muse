@@ -29,6 +29,7 @@ pub enum VectorRenderMode {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FieldDisplayMetadata {
+    pub semantic_role: Option<SemanticRole>,
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub units: Option<String>,
@@ -78,6 +79,7 @@ mod tests {
     fn metadata_provenance_and_run_identity_roundtrip() {
         roundtrip(&SemanticRole::Derived);
         roundtrip(&FieldDisplayMetadata {
+            semantic_role: Some(SemanticRole::Derived),
             display_name: Some("field".into()),
             description: Some("description".into()),
             units: Some("u".into()),

@@ -1,6 +1,12 @@
-//! Wave 3 per-operator implementation seam.
-//! Each listed contract has an explicit unsupported stub until its owning worker lands.
+//! Per-family Wave 3 dispatch seams. Implementations are owned by the corresponding files.
 use crate::OperatorError;
+
+pub mod boundary_normal;
+pub mod boundary_tangential;
+pub mod divergence;
+pub mod equilibrium;
+pub mod region_vector;
+pub mod vector_algebra;
 
 pub const STUB_OPERATOR_IDS: &[&str] = &[
     "region_vector",
@@ -12,6 +18,6 @@ pub const STUB_OPERATOR_IDS: &[&str] = &[
     "scalar_vector_multiply",
 ];
 
-pub fn not_implemented(operator_id: &str) -> OperatorError {
+pub(crate) fn not_implemented(operator_id: &str) -> OperatorError {
     OperatorError::NotImplemented(operator_id.to_owned())
 }
