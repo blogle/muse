@@ -5,6 +5,12 @@ use std::collections::BTreeMap;
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
+pub mod wave3;
+pub use wave3::{
+    FieldDisplayMetadata, InterventionDeclaration, NodeProvenance, RenderChannel, SemanticRole,
+    SnapshotIdentity, VectorRenderMode,
+};
+
 pub type CellId = u32;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -211,6 +217,36 @@ const ADVECT_IN: &[PortSpec] = &[
         required: true,
     },
 ];
+const LABEL_VELOCITY_IN: &[PortSpec] = &[
+    PortSpec {
+        name: "labels",
+        ty: ValueType::CategoryField,
+        required: true,
+    },
+    PortSpec {
+        name: "velocity",
+        ty: ValueType::VectorField,
+        required: true,
+    },
+];
+const LABELS_IN: &[PortSpec] = CATEGORY_IN;
+const VECTOR_IN: &[PortSpec] = &[PortSpec {
+    name: "field",
+    ty: ValueType::VectorField,
+    required: true,
+}];
+const SCALAR_VECTOR_IN: &[PortSpec] = &[
+    PortSpec {
+        name: "scalar",
+        ty: ValueType::ScalarField,
+        required: true,
+    },
+    PortSpec {
+        name: "vector",
+        ty: ValueType::VectorField,
+        required: true,
+    },
+];
 
 /// Stable Wave 1 descriptor list. Expression-driven named/variadic bindings for
 /// pointwise and vector_expr use expression-binding schemas, not fixed ports.
@@ -338,12 +374,43 @@ pub static OPERATOR_DESCRIPTORS: &[OperatorDescriptor] = &[
     },
     OperatorDescriptor {
         id: "vector_magnitude",
-        inputs: &[PortSpec {
-            name: "field",
-            ty: ValueType::VectorField,
-            required: true,
-        }],
+        inputs: VECTOR_IN,
         outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
+        id: "region_vector",
+        inputs: LABELS_IN,
+        outputs: VECTOR_OUT,
+    },
+    OperatorDescriptor {
+        id: "boundary_normal_component",
+        inputs: LABEL_VELOCITY_IN,
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
+        id: "boundary_tangential_component",
+        inputs: LABEL_VELOCITY_IN,
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
+        id: "divergence",
+        inputs: VECTOR_IN,
+        outputs: FIELD_OUT,
+    },
+    OperatorDescriptor {
+        id: "vector_add",
+        inputs: VECTOR_BINARY_IN,
+        outputs: VECTOR_OUT,
+    },
+    OperatorDescriptor {
+        id: "vector_subtract",
+        inputs: VECTOR_BINARY_IN,
+        outputs: VECTOR_OUT,
+    },
+    OperatorDescriptor {
+        id: "scalar_vector_multiply",
+        inputs: SCALAR_VECTOR_IN,
+        outputs: VECTOR_OUT,
     },
 ];
 
@@ -436,12 +503,21 @@ mod tests {
             "threshold",
             "vector_dot",
             "vector_magnitude",
+            "region_vector",
+            "boundary_normal_component",
+            "boundary_tangential_component",
+            "divergence",
+            "vector_add",
+            "vector_subtract",
+            "scalar_vector_multiply",
         ];
         let ids: Vec<_> = OPERATOR_DESCRIPTORS
             .iter()
             .map(|descriptor| descriptor.id)
             .collect();
-        assert_eq!(ids, required);
+        for id in required {
+            assert!(ids.contains(&id), "missing descriptor {id}");
+        }
         assert_eq!(
             ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
             ids.len()

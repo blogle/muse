@@ -7,6 +7,8 @@ use muse_types::{CellId, Field, Mesh, Network, Program, ValueRef, WorldState};
 use rayon::prelude::*;
 use thiserror::Error;
 
+pub mod wave3;
+
 #[derive(Debug, Error)]
 pub enum OperatorError {
     #[error("invalid input: {0}")]
@@ -1361,6 +1363,10 @@ pub fn execute_with_inputs(
             )),
             "network_threshold" => {
                 return Err(OperatorError::NotImplemented(node.op.clone()));
+            }
+            "region_vector" | "boundary_normal_component" | "boundary_tangential_component"
+            | "divergence" | "vector_add" | "vector_subtract" | "scalar_vector_multiply" => {
+                return Err(wave3::not_implemented(&node.op));
             }
             "pointwise" => {
                 if node.cel.len() != 1 {

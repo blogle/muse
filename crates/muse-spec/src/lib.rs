@@ -793,6 +793,7 @@ fn config_arguments(op: &str) -> &'static [(&'static str, bool, ValueType)] {
             ("offset", false, ValueType::Scalar),
         ],
         "boundary_signed_difference" => &[("scale", false, ValueType::Scalar)],
+        "region_vector" => &[("magnitude", true, ValueType::Scalar)],
         "voronoi_labels" => &[("count", true, ValueType::Scalar)],
         "diffuse" => &[
             ("rate", true, ValueType::Scalar),
@@ -1110,6 +1111,21 @@ mod tests {
                 .to_string()
                 .contains("programs.generate.nodes.attr.args.labels")
         );
+    }
+
+    #[test]
+    fn wave3_operator_schemas_are_compiler_visible_and_typed() {
+        let source = "inputs:\n  labels: category_field\n  velocity: vector_field\n  vector: vector_field\n  scalar: scalar_field\n  other: vector_field\nprograms:\n  generate:\n    nodes:\n      rv: {op: region_vector, args: {labels: $input.labels, magnitude: 2.0}}\n      bn: {op: boundary_normal_component, args: {labels: $input.labels, velocity: $input.velocity}}\n      bt: {op: boundary_tangential_component, args: {labels: $input.labels, velocity: $input.velocity}}\n      dv: {op: divergence, args: {field: $input.vector}}\n      add: {op: vector_add, args: {a: $input.vector, b: $input.other}}\n      sub: {op: vector_subtract, args: {a: $input.vector, b: $input.other}}\n      mul: {op: scalar_vector_multiply, args: {scalar: $input.scalar, vector: $input.vector}}\n      dot: {op: vector_dot, args: {a: $input.vector, b: $input.other}}\n      mag: {op: vector_magnitude, args: {field: $input.vector}}\n      grad: {op: gradient, args: {field: $input.scalar}}\n";
+        assert_eq!(compile(source).unwrap().nodes.len(), 10);
+        for bad in [
+            source.replace("magnitude: 2.0", "magnitude: $input.scalar"),
+            source.replace("velocity: $input.velocity", "velocity: $input.scalar"),
+        ] {
+            assert_eq!(
+                compile(&bad).unwrap_err().category,
+                ErrorCategory::TypeMismatch
+            );
+        }
     }
 
     #[test]
