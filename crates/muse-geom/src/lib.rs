@@ -4,6 +4,8 @@ use glam::DVec3;
 use hexasphere::shapes::IcoSphere;
 use muse_types::Mesh;
 
+pub mod wave3;
+
 /// Geometry construction errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryError {

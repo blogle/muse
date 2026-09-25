@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './style.css';
+import { wave3Ownership } from './wave3';
 import wave2Snapshot from './fixtures/wave2-generic.json';
+
+void wave3Ownership;
 
 type Field = {
   Scalar?: number[];
