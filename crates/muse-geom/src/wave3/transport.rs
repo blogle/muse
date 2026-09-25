@@ -25,12 +25,20 @@ pub fn project_tangent(position: DVec3, vector: DVec3) -> DVec3 {
 pub fn parallel_transport(from: DVec3, to: DVec3, vector: DVec3) -> DVec3 {
     let a = from.normalize_or_zero();
     let b = to.normalize_or_zero();
-    if a == DVec3::ZERO || b == DVec3::ZERO || !vector.is_finite() {
+    if !a.is_finite()
+        || !b.is_finite()
+        || a == DVec3::ZERO
+        || b == DVec3::ZERO
+        || !vector.is_finite()
+    {
         return DVec3::ZERO;
     }
     let axis = a.cross(b);
     let sin = axis.length();
     let cos = a.dot(b).clamp(-1.0, 1.0);
+    // The shortest geodesic is ambiguous at the antipode. Treat numerically
+    // degenerate endpoint pairs consistently with the coincident case, using
+    // deterministic tangent projection onto the destination plane.
     if sin <= DEGENERACY_EPSILON {
         return project_tangent(b, project_tangent(a, vector));
     }
@@ -62,13 +70,50 @@ mod tests {
     use super::*;
     #[test]
     fn projection_and_transport_are_finite_and_tangent() {
+        let from = DVec3::X;
+        let vector = DVec3::Y;
         for to in [DVec3::X, DVec3::Y, -DVec3::X, DVec3::ZERO] {
-            let moved = parallel_transport(DVec3::X, to, DVec3::Y);
+            let moved = parallel_transport(from, to, vector);
             assert!(moved.is_finite());
             if to != DVec3::ZERO {
                 assert!(to.normalize().dot(moved).abs() < TANGENCY_TOLERANCE);
             }
         }
+    }
+
+    #[test]
+    fn coincident_transport_is_tangent_projection_and_preserves_tangent_vectors() {
+        let position = DVec3::new(2.0, 0.0, 0.0);
+        let tangent = DVec3::new(0.0, 3.0, 4.0);
+        assert_eq!(parallel_transport(position, position, tangent), tangent);
+        assert_eq!(
+            parallel_transport(position, position, DVec3::X),
+            DVec3::ZERO
+        );
+    }
+
+    #[test]
+    fn degenerate_and_near_antipodal_transport_is_finite_and_deterministic() {
+        let vector = DVec3::new(0.0, 1.0, 2.0);
+        for (from, to) in [
+            (DVec3::ZERO, DVec3::Y),
+            (DVec3::X, -DVec3::X),
+            (DVec3::X, DVec3::new(-1.0, DEGENERACY_EPSILON / 2.0, 0.0)),
+        ] {
+            let first = parallel_transport(from, to, vector);
+            let second = parallel_transport(from, to, vector);
+            assert!(first.is_finite());
+            assert_eq!(first, second);
+        }
+    }
+
+    #[test]
+    fn shortest_geodesic_transport_preserves_length_and_is_tangent() {
+        let from = DVec3::X;
+        let to = DVec3::Y;
+        let moved = parallel_transport(from, to, DVec3::Z * 2.0);
+        assert!((moved.length() - 2.0).abs() < TANGENCY_TOLERANCE);
+        assert!(to.dot(moved).abs() <= TANGENCY_TOLERANCE);
     }
 
     #[test]
