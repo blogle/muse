@@ -1364,9 +1364,16 @@ pub fn execute_with_inputs(
             "network_threshold" => {
                 return Err(OperatorError::NotImplemented(node.op.clone()));
             }
-            "region_vector" | "boundary_normal_component" | "boundary_tangential_component"
-            | "divergence" | "vector_add" | "vector_subtract" | "scalar_vector_multiply" => {
-                return Err(wave3::not_implemented(&node.op));
+            "region_vector" => return Err(wave3::region_vector::dispatch()),
+            "boundary_normal_component" => {
+                return Err(wave3::boundary_normal::dispatch(&node.op));
+            }
+            "boundary_tangential_component" => {
+                return Err(wave3::boundary_tangential::dispatch());
+            }
+            "divergence" => return Err(wave3::divergence::dispatch()),
+            "vector_add" | "vector_subtract" | "scalar_vector_multiply" => {
+                return Err(wave3::vector_algebra::dispatch(&node.op));
             }
             "pointwise" => {
                 if node.cel.len() != 1 {
