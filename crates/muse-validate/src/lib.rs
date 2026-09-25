@@ -7,6 +7,12 @@ use muse_types::{Field, WorldState};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod wave3;
+/// Backward-compatible name for the initial paired Wave 3 contracts.
+pub mod paired {
+    pub use crate::wave3::*;
+}
+
 #[derive(Debug, Error)]
 pub enum ValidationError {
     #[error("invalid validation YAML: {0}")]
