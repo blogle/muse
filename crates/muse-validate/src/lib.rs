@@ -7,6 +7,8 @@ use muse_types::{Field, WorldState};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod paired;
+
 #[derive(Debug, Error)]
 pub enum ValidationError {
     #[error("invalid validation YAML: {0}")]
